@@ -1,5 +1,6 @@
 import socket
 from queue import Queue
+import queue
 from threading import Thread
 
 
@@ -28,7 +29,7 @@ class Node:
     #   incoming: connections which are accepted by this peer
     def handle_connections(self):
         while not self.stop:
-            conn, addr = self.sock.accept()
+            conn, addr = self.sock.accept() # add timeout to avoid blocking or forcefully stop thread
             if any(peer.addr == addr for peer in self.peers):
                 continue
             self.peers.append(Connection("incoming", addr, conn, self.q))
@@ -70,6 +71,8 @@ class Node:
     # TODO: implement functionality for each message
     def message_handler(self):
         while not self.stop:
-            msg: Message = self.q.get()
-            print(f"{self.sock.getsockname()}: {msg}")
-        print("Message handler stopped")
+            try:
+                msg: Message = self.q.get(block=False)
+                print(f"{self.sock.getsockname()}: {msg}")
+            except queue.Empty:
+                pass
