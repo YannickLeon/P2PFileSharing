@@ -8,16 +8,16 @@ import sys
 
 def get_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(('8.8.8.8', 1500))
+    s.connect(('8.8.8.8', 0))
     ip = s.getsockname()[0]
     s.close()
     return ip
 
 
 def main():
-    print(f"Starting node with on port {sys.argv[1]}")
+    print("Starting node...")
     ip = get_ip()
-    node: Node = Node(ip, int(sys.argv[1]))
+    node: Node = Node(ip)
 
     while True:
         user_input = input(">")

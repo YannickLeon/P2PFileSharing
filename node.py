@@ -11,7 +11,7 @@ from connection import Connection
 BC_ADDR = ("0.0.0.0", 9000)
 
 class Node:
-    def __init__(self, ip: str, port: int):
+    def __init__(self, ip: str, port: int = 0):
         self.peers: list[Connection] = []
         self.q: Queue = Queue()
         self.stop = False
@@ -21,6 +21,7 @@ class Node:
         self.sock.setblocking(0)
         self.sock.bind((ip, port))
         self.sock.listen(1)
+        ip, port = self.sock.getsockname()
         print(f"[i] Server listening on {ip}:{port}.")
 
         # socket to send broadcasts
@@ -44,7 +45,7 @@ class Node:
         content = b""
         for seg in segments:
             content += np.uint8(int(seg)).tobytes()
-        content += port.to_bytes(length=4, byteorder="big", signed=False)
+        content += self.sock.getsockname()[1].to_bytes(length=4, byteorder="big", signed=False)
         self.send_broadcast(Message(Message.bytecodes["init"], 8, content))
 
 
