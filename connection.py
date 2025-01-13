@@ -2,6 +2,7 @@ import socket
 import numpy as np
 from threading import Thread
 from queue import Queue
+import select
 
 from message import Message
 
@@ -10,6 +11,7 @@ class Connection():
         self.mode = mode
         self.addr = addr
         self.sock = sock
+        sock.setblocking(False)
         self.q = q
 
         self.stop = False
@@ -22,6 +24,9 @@ class Connection():
         data = b""
         while not self.stop:
             try:
+                ready = select.select([self.sock], [], [], 0.5)
+                if not ready[0]:
+                    continue
                 data += self.sock.recv(1024 * 64)
                 if (
                     not data
@@ -50,5 +55,7 @@ class Connection():
             print(f"[!] Error while sending message: {e.strerror}")
     
     def close(self):
+        self.stop = True
+        self.listener_thread.join()
         self.sock.close()
         print(f"[i] Closed connection to {self.addr}.")

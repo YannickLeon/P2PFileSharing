@@ -8,11 +8,11 @@ class Message:
     "data_end": 11,
 }
 
-    def __init__(self, control_byte: byte, length: int, content: bytes, sender: str = None) -> None:
+    def __init__(self, control_byte: byte, length: int, content: bytes, sender: tuple[str, int] = [None, None]):
         self.control_byte: byte = byte(control_byte)
         self.length: int = length
         self.content: bytes = content
-        self.sender: str = f"{sender[0]}:{sender[1]}" if sender else None
+        self.sender: tuple[str, int] = sender
         
 
     def to_bytes(self) -> bytes:
@@ -23,4 +23,4 @@ class Message:
         )
     
     def __str__(self):
-        return f"[Message <b:{int(self.control_byte)}> <len:{self.length}> <sdr:{self.sender}>]"
+        return f"[Message <b:{int(self.control_byte)}> <len:{self.length}> <sdr:{self.sender[0]}:{self.sender[1]}>]"
