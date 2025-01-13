@@ -17,7 +17,6 @@ def main():
             msg = Message(int(user_input[1]), int(user_input[2]), b"")
             if int(user_input[2])> 0:
                 msg = Message(int(user_input[1]), int(user_input[2]), user_input[3].encode("utf-8"))
-            print(f"Sending Message: {msg}")
             node.message_peers(msg)
             continue
         if user_input[0] == "lp":

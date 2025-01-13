@@ -1,3 +1,4 @@
+import select
 import socket
 from queue import Queue
 import queue
@@ -14,11 +15,12 @@ class Node:
         self.stop = False
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setblocking(0)
         self.sock.bind((ip, port))
         self.sock.listen(1)
         print(f"[i] Server listening on {ip}:{port}.")
 
-        self.connection_thread = Thread(target=self.handle_connections, daemon=True)
+        self.connection_thread = Thread(target=self.handle_connections)
         self.connection_thread.start()
         self.message_thread = Thread(target=self.message_handler)
         self.message_thread.start()
@@ -30,6 +32,9 @@ class Node:
     def handle_connections(self):
         while not self.stop:
             try:
+                ready = select.select([self.sock], [], [], 0.5)
+                if not ready[0]:
+                    continue
                 conn, addr = self.sock.accept() # add timeout to avoid blocking or forcefully stop thread
                 if any(peer.addr == addr for peer in self.peers):
                     continue
@@ -37,6 +42,7 @@ class Node:
                 print(f"[i] New connection by {addr}")
             except:
                 continue
+        print("[i] Stopped connection thread.")
 
 
     # establish outgoing connection to peer
@@ -63,6 +69,7 @@ class Node:
         self.peers.clear()
         self.stop = True
         self.message_thread.join()
+        self.connection_thread.join()
         self.sock.close()
 
 
