@@ -11,10 +11,10 @@ class Connection():
         self.mode = mode
         self.addr = addr
         self.sock = sock
-        sock.setblocking(False)
         self.q = q
-
         self.stop = False
+    
+        sock.setblocking(False)
         
         self.listener_thread = Thread(target=self.listen)
         self.listener_thread.start()
@@ -27,7 +27,8 @@ class Connection():
                 ready = select.select([self.sock], [], [], 0.5)
                 if not ready[0]:
                     continue
-                data += self.sock.recv(1024 * 64)
+                content, addr= self.sock.recvfrom(1024 * 64)
+                data += content
                 if (
                     not data
                     or len(data) < 5
@@ -39,7 +40,7 @@ class Connection():
                         np.byte(data[0]),
                         int.from_bytes(data[1:5], byteorder="big"),
                         data[5 : 5 + int.from_bytes(data[1:5], byteorder="big")],
-                        self.addr,
+                        addr if self.mode == "broadcast" else self.addr,
                     )
                 )
                 data = data[5 + int.from_bytes(data[1:5], byteorder="big"):]
