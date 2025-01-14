@@ -31,19 +31,20 @@ class Connection():
                 data += content
                 if (
                     not data
-                    or len(data) < 5
-                    or (len(data) - 5) < int.from_bytes(data[1:5], byteorder="big")
+                    or len(data) < 21
+                    or (len(data) - 21) < int.from_bytes(data[17:21], byteorder="big")
                 ):
                     continue
                 self.q.put(
                     Message(
                         np.byte(data[0]),
-                        int.from_bytes(data[1:5], byteorder="big"),
-                        data[5 : 5 + int.from_bytes(data[1:5], byteorder="big")],
+                        data[1:17],
+                        int.from_bytes(data[17:21], byteorder="big"),
+                        data[21 : 21 + int.from_bytes(data[17:21], byteorder="big")],
                         addr if self.mode == "broadcast" else self.addr,
                     )
                 )
-                data = data[5 + int.from_bytes(data[1:5], byteorder="big"):]
+                data = data[21 + int.from_bytes(data[17:21], byteorder="big"):]
             except socket.error:
                 print("[!] Connection error while receiving data.")
                 break

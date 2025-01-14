@@ -1,7 +1,8 @@
 import select
 import socket
-from queue import Queue
+import uuid
 import queue
+from queue import Queue
 from threading import Thread
 import numpy as np
 
@@ -15,6 +16,7 @@ class Node:
         self.peers: list[Connection] = []
         self.q: Queue = Queue()
         self.stop = False
+        self.uuid = uuid.uuid4()
 
         # socket to listen for incoming connections
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -46,7 +48,7 @@ class Node:
         for seg in segments:
             content += np.uint8(int(seg)).tobytes()
         content += self.sock.getsockname()[1].to_bytes(length=4, byteorder="big", signed=False)
-        self.send_broadcast(Message(Message.bytecodes["init"], 8, content))
+        self.send_broadcast(Message(Message.bytecodes["init"], self.uuid.bytes, 8, content))
 
 
     # Accept new connections from peers if no outgoing or incoming connectiosn exist
@@ -88,7 +90,7 @@ class Node:
     def leave(self):
         self.bc_listen.close()
         for peer in self.peers:
-            peer.send_message(Message(Message.bytecodes["disconnect"], 0, b""))
+            peer.send_message(Message(Message.bytecodes["disconnect"], self.uuid.bytes, 0, b""))
             peer.close()
         self.peers.clear()
         self.stop = True
