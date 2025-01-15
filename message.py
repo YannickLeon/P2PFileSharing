@@ -1,25 +1,27 @@
 from numpy import byte
+import uuid
 
 class Message:
     bytecodes = {
     "init": 0,
-    "disconnect": 1,
+    "identify": 1,
+    "disconnect": 2,
     "data": 10,
     "data_end": 11,
 }
 
-    def __init__(self, control_byte: byte, uuid: bytes, length: int, content: bytes, sender: tuple[str, int] = [None, None]):
+    def __init__(self, control_byte: byte, unique_id: uuid.UUID, length: int = 0, content: bytes = b"", sender: tuple[str, int] = [None, None]):
         self.control_byte: byte = byte(control_byte)
         self.length: int = length
         self.content: bytes = content
-        self.uuid: bytes = uuid
+        self.uuid: uuid.UUID = unique_id
         self.sender: tuple[str, int] = sender
         
 
     def to_bytes(self) -> bytes:
         return (
             self.control_byte.tobytes()
-            + self.uuid
+            + self.uuid.bytes
             + self.length.to_bytes(length=4, byteorder="big", signed=False)
             + self.content
         )
