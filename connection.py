@@ -4,6 +4,7 @@ from threading import Thread
 from queue import Queue
 import select
 import uuid
+import time
 
 from message import Message
 
@@ -45,7 +46,7 @@ class Connection():
                         int.from_bytes(data[17:21], byteorder="big"),
                         data[21: 21 +
                              int.from_bytes(data[17:21], byteorder="big")],
-                        addr if self.mode == "broadcast" else self.addr,
+                        self
                     )
                 )
                 data = data[21 + int.from_bytes(data[17:21], byteorder="big"):]

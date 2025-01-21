@@ -7,16 +7,18 @@ class Message:
         "init": 0,
         "identify": 1,
         "disconnect": 2,
+        "heartbeat": 3,
         "data": 10,
         "data_end": 11,
     }
 
-    def __init__(self, control_byte: byte, unique_id: uuid.UUID, length: int = 0, content: bytes = b"", sender: tuple[str, int] = [None, None]):
+    # Maybe change sender to be a reference to the connection object and add an addr field for broadcasts.
+    def __init__(self, control_byte: byte, unique_id: uuid.UUID, length: int = 0, content: bytes = b"", sender=None):
         self.control_byte: byte = byte(control_byte)
         self.length: int = length
         self.content: bytes = content
         self.uuid: uuid.UUID = unique_id
-        self.sender: tuple[str, int] = sender
+        self.sender = sender
 
     def to_bytes(self) -> bytes:
         return (
