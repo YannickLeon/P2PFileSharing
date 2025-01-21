@@ -2,8 +2,6 @@ from node import Node
 import socket
 import numpy as np
 from message import Message
-import sys
-
 # might be needed to receive broadcasts: sudo ufw allow 9000/udp
 
 

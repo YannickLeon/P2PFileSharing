@@ -137,7 +137,8 @@ class Node:
                     removeable.append(peer)
             self.heartbeat_mutex.release()
             for peer in removeable:
-                self.disconnect(peer)
+                if peer in self.peers:
+                    self.disconnect(peer)
             time.sleep(1)
             self.message_peers(
                 Message(Message.bytecodes["heartbeat"], self.uuid))
@@ -187,8 +188,8 @@ class Node:
                 print(f"{msg}")
             except queue.Empty:
                 pass
-            except Exception as e:
-                print(f"[!] Error in message_handler: {e}")
+            # except Exception as e:
+            #     print(f"[!] Error in message_handler: {e}")
         print("[i] Stopped message handler")
 
     def list_peers(self):

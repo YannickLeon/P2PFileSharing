@@ -29,4 +29,4 @@ class Message:
         )
 
     def __str__(self):
-        return f"[Message <b:{int(self.control_byte)}> <uuid:{self.uuid}> <len:{self.length}> <sdr:{self.sender[0]}:{self.sender[1]}>]"
+        return f"[Message <b:{int(self.control_byte)}> <uuid:{self.uuid}> <len:{self.length}> <sdr:{self.sender.addr[0]}:{self.sender.addr[1]}>]"
