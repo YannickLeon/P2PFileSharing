@@ -124,16 +124,16 @@ class Node:
                         continue
                     if any(peer.uuid == msg.uuid for peer in self.peers) or self.uuid == msg.uuid:
                         continue
-                    # mutex to avoid adding peers while an incoming connection is being accepted (avoid duplicates)
-                    self.mutex.acquire(blocking=True)
                     ip = ""
                     for d in msg.content[:4]:
                         ip += str(np.uint8(d)) + "."
                     ip = ip[:-1]
                     port = int.from_bytes(
                         msg.content[4:8], byteorder="big", signed=False)
+                    #
+                    if any(peer.addr == (ip, port) for peer in self.peers):
+                        continue
                     self.connect((ip, port), msg.uuid)
-                    self.mutex.release()
                     continue
                 if msg.control_byte == msg.bytecodes["identify"]:
                     # mutex to avoid identifying peers before adding them to the peer list
