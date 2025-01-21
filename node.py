@@ -11,13 +11,15 @@ from connection import Connection
 
 BC_ADDR = ("0.0.0.0", 9000)
 
+
 class Node:
     def __init__(self, ip: str, port: int = 0):
         self.peers: list[Connection] = []
         self.q: Queue = Queue()
         self.stop = False
         self.uuid = uuid.uuid4()
-        self.mutex = Lock() # mutex to deal with threading issues when accepting and identifying new peers
+        # mutex to deal with threading issues when accepting and identifying new peers
+        self.mutex = Lock()
 
         # socket to listen for incoming connections
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -48,9 +50,10 @@ class Node:
         content = b""
         for seg in segments:
             content += np.uint8(int(seg)).tobytes()
-        content += self.sock.getsockname()[1].to_bytes(length=4, byteorder="big", signed=False)
-        self.send_broadcast(Message(Message.bytecodes["init"], self.uuid, 8, content))
-
+        content += self.sock.getsockname()[1].to_bytes(
+            length=4, byteorder="big", signed=False)
+        self.send_broadcast(
+            Message(Message.bytecodes["init"], self.uuid, 8, content))
 
     # Accept new connections from peers if no outgoing or incoming connectiosn exist
     #   outgoing: connections which are initiated by this peer
@@ -72,7 +75,6 @@ class Node:
                 continue
         print("[i] Stopped connection thread.")
 
-
     # establish outgoing connection to peer
     def connect(self, addr, unique_id):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -81,7 +83,6 @@ class Node:
         peer.send_message(Message(Message.bytecodes["identify"], self.uuid))
         self.peers.append(peer)
         print(f"[i] New connection with {addr}")
-    
 
     def disconnect(self, addr):
         for peer in self.peers:
@@ -89,20 +90,19 @@ class Node:
                 peer.close()
                 print(f"[i] Disconnected peer {peer.uuid}")
                 self.peers.remove(peer)
-                
 
     # notify peers and close all connections
     def leave(self):
         self.bc_listen.close()
         for peer in self.peers:
-            peer.send_message(Message(Message.bytecodes["disconnect"], self.uuid))
+            peer.send_message(
+                Message(Message.bytecodes["disconnect"], self.uuid))
             peer.close()
         self.peers.clear()
         self.stop = True
         self.message_thread.join()
         self.connection_thread.join()
         self.sock.close()
-
 
     def send_broadcast(self, msg: Message):
         # print(f"[i] Sending broadcast: {msg}")
@@ -113,8 +113,8 @@ class Node:
         for peer in self.peers:
             peer.send_message(msg)
 
-    
     # TODO: implement functionality for each message
+
     def message_handler(self):
         while not self.stop:
             try:
@@ -122,22 +122,34 @@ class Node:
                 if msg.control_byte == msg.bytecodes["init"]:
                     if msg.length < 8:  # ignore if message is of insufficient length
                         continue
+                    if any(peer.uuid == msg.uuid for peer in self.peers) or self.uuid == msg.uuid:
+                        continue
+                    # mutex to avoid adding peers while an incoming connection is being accepted (avoid duplicates)
+                    self.mutex.acquire(blocking=True)
                     ip = ""
                     for d in msg.content[:4]:
                         ip += str(np.uint8(d)) + "."
                     ip = ip[:-1]
-                    port = int.from_bytes(msg.content[4:8], byteorder="big", signed=False)
-                    if any(peer.addr == (ip, port) for peer in self.peers) or self.sock.getsockname() == (ip, port):
-                       continue
+                    port = int.from_bytes(
+                        msg.content[4:8], byteorder="big", signed=False)
                     self.connect((ip, port), msg.uuid)
+                    self.mutex.release()
                     continue
                 if msg.control_byte == msg.bytecodes["identify"]:
-                    self.mutex.acquire(blocking=True)   # mutex to avoid identifying peers before adding them to the peer list
+                    # mutex to avoid identifying peers before adding them to the peer list
+                    self.mutex.acquire(blocking=True)
                     print(f"[i] Received identification from {msg.sender}")
                     for peer in self.peers:
                         if peer.addr == msg.sender:
+                            # remove peer if its a duplicate, not sure if needed
+                            if any(peer.uuid == msg.uuid for peer in self.peers):
+                                print(f"\t Duplicate peer found!")
+                                peer.send_message(
+                                    Message(Message.bytecodes["disconnect"], self.uuid))
+                                self.disconnect(peer.addr)
+                                break
                             print(f"\t Peer found!")
-                            peer.uuid = msg.uuid    
+                            peer.uuid = msg.uuid
                             break
                     self.mutex.release()
                     continue
@@ -151,7 +163,6 @@ class Node:
                 print(f"[!] Error in message_handler: {e}")
         print("[i] Stopped message handler")
 
-    
     def list_peers(self):
         print("*** Peers **************")
         for peer in self.peers:
