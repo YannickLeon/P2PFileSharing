@@ -49,7 +49,9 @@ class Node:
         self.connection_thread.start()
         self.message_thread = Thread(target=self.message_handler)
         self.message_thread.start()
-        self.heartbeat_thread = Thread(target=self.check_heartbeats)
+        self.heartbeat_checker_thread = Thread(target=self.check_heartbeat)
+        self.heartbeat_checker_thread.start()
+        self.heartbeat_thread = Thread(target=self.send_heartbeat)
         self.heartbeat_thread.start()
 
         # send broadcast to join the network (place somewhere else later)
@@ -91,6 +93,7 @@ class Node:
         self.stop = True
         self.message_thread.join()
         self.connection_thread.join()
+        self.heartbeat_checker_thread.join()
         self.heartbeat_thread.join()
         self.sock.close()
 
@@ -127,21 +130,25 @@ class Node:
                 continue
         print("[i] Stopped connection thread.")
 
-    def check_heartbeats(self):
+    def check_heartbeat(self):
         while not self.stop:
+            time.sleep(1)
             removeable = []
             self.heartbeat_mutex.acquire()
             for peer, timer in self.heartbeat_timers.items():
-                if timer + HEARTBEAT_INTERVAL + 1 < time.time():
+                if timer + (2*HEARTBEAT_INTERVAL) < time.time():
                     # TODO: send notification to all peers to maintain consistent state
                     removeable.append(peer)
             self.heartbeat_mutex.release()
             for peer in removeable:
                 if peer in self.peers:
                     self.disconnect(peer)
-            time.sleep(1)
+
+    def send_heartbeat(self):
+        while not self.stop:
             self.message_peers(
                 Message(Message.bytecodes["heartbeat"], self.uuid))
+            time.sleep(HEARTBEAT_INTERVAL)
 
     # TODO: implement functionality for each message
     def message_handler(self):
@@ -188,8 +195,8 @@ class Node:
                 print(f"{msg}")
             except queue.Empty:
                 pass
-            # except Exception as e:
-            #     print(f"[!] Error in message_handler: {e}")
+            except Exception as e:
+                print(f"[!] Error in message_handler: {e}")
         print("[i] Stopped message handler")
 
     def list_peers(self):
