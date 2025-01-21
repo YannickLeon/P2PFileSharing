@@ -5,7 +5,6 @@ import queue
 from queue import Queue
 from threading import Thread, Lock
 import numpy as np
-import time
 
 from message import Message
 from connection import Connection
@@ -56,7 +55,6 @@ class Node:
     # Accept new connections from peers if no outgoing or incoming connectiosn exist
     #   outgoing: connections which are initiated by this peer
     #   incoming: connections which are accepted by this peer
-    #   add mutex so that identify messages are not processed while a new connection was accepted
     def handle_connections(self):
         while not self.stop:
             try:
@@ -122,7 +120,7 @@ class Node:
             try:
                 msg: Message = self.q.get(block=False)
                 if msg.control_byte == msg.bytecodes["init"]:
-                    if msg.length < 8:  # ignore if content is of insufficient length
+                    if msg.length < 8:  # ignore if message is of insufficient length
                         continue
                     ip = ""
                     for d in msg.content[:4]:
