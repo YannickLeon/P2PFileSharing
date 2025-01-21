@@ -85,16 +85,16 @@ class Node:
     # notify peers and close all connections
     def leave(self):
         self.bc_listen.close()
-        for peer in self.peers:
-            peer.send_message(
-                Message(Message.bytecodes["disconnect"], self.uuid))
-            peer.close()
-        self.peers.clear()
         self.stop = True
         self.message_thread.join()
         self.connection_thread.join()
         self.heartbeat_checker_thread.join()
         self.heartbeat_thread.join()
+        for peer in self.peers:
+            peer.send_message(
+                Message(Message.bytecodes["disconnect"], self.uuid))
+            peer.close()
+        self.peers.clear()
         self.sock.close()
 
     def send_broadcast(self, msg: Message):
@@ -142,6 +142,7 @@ class Node:
             self.heartbeat_mutex.release()
             for peer in removeable:
                 if peer in self.peers:
+                    print(f"[i] No heartbeat from {peer.uuid}")
                     self.disconnect(peer)
 
     def send_heartbeat(self):
