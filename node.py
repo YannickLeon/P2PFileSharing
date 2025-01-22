@@ -21,7 +21,7 @@ class Node:
         self.stop = False
         self.uuid = uuid.uuid4()
         self.heartbeat_timers: dict[Connection, float] = {}
-        # mutex to make sure heartbeat is not changed as it is being accessed
+        # mutex to make sure heartbeat dict is not changed as it is being accessed
         self.heartbeat_mutex = Lock()
         # mutex to deal with threading issues when accepting and identifying new peers
         self.mutex = Lock()
@@ -31,8 +31,7 @@ class Node:
         self.sock.setblocking(0)
         self.sock.bind((ip, port))
         self.sock.listen(1)
-        ip, port = self.sock.getsockname()
-        print(f"[i] Server listening on {ip}:{port}.")
+        print(f"[i] Server listening on {ip}:{self.sock.getsockname()[1]}.")
 
         # socket to send broadcasts
         self.bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -54,15 +53,25 @@ class Node:
         self.heartbeat_thread = Thread(target=self.send_heartbeat)
         self.heartbeat_thread.start()
 
-        # send broadcast to join the network (place somewhere else later)
-        segments = ip.split(".")
+        # thread for sending discovery broadcast (needs to be implemented properly)
+        self.init_thread = Thread(target=self.discovery)
+        self.init_thread.start()
+
+    def discovery(self):
+        segments = self.sock.getsockname()[0].split(".")
         content = b""
         for seg in segments:
             content += np.uint8(int(seg)).tobytes()
         content += self.sock.getsockname()[1].to_bytes(
             length=4, byteorder="big", signed=False)
-        self.send_broadcast(
-            Message(Message.bytecodes["init"], self.uuid, 8, content))
+        while not self.stop:
+            if len(self.peers) > 0:
+                time.sleep(5)
+                continue
+            print("[i] Sending discovery broadcast...")
+            self.send_broadcast(
+                Message(Message.bytecodes["init"], self.uuid, 8, content))
+            time.sleep(5)
 
     # establish outgoing connection to peer
     def connect(self, addr, unique_id):
@@ -137,12 +146,12 @@ class Node:
             self.heartbeat_mutex.acquire()
             for peer, timer in self.heartbeat_timers.items():
                 if timer + (2*HEARTBEAT_INTERVAL) < time.time():
-                    # TODO: send notification to all peers to maintain consistent state
                     removeable.append(peer)
             self.heartbeat_mutex.release()
             for peer in removeable:
                 if peer in self.peers:
                     print(f"[i] No heartbeat from {peer.uuid}")
+                    # TODO: send notification to all peers to maintain consistent state
                     self.disconnect(peer)
 
     def send_heartbeat(self):
@@ -175,23 +184,23 @@ class Node:
                     # mutex to avoid identifying peers before adding them to the peer list
                     self.mutex.acquire(blocking=True)
                     print(
-                        f"[i] Received identification from {msg.sender.addr}")
+                        f"[i] Received identification from {msg.connection.addr}")
                     # remove peer if its a duplicate, not sure if needed
-                    if any(peer.uuid == msg.uuid and msg.sender != peer for peer in self.peers):
+                    if any(peer.uuid == msg.uuid and msg.connection != peer for peer in self.peers):
                         print(f"\t Duplicate peer found!")
-                        msg.sender.send_message(
+                        msg.connection.send_message(
                             Message(Message.bytecodes["disconnect"], self.uuid))
-                        self.disconnect(msg.sender)
+                        self.disconnect(msg.connection)
                         continue
                     print(f"\t Peer found!")
-                    msg.sender.uuid = msg.uuid
+                    msg.connection.uuid = msg.uuid
                     self.mutex.release()
                     continue
                 if msg.control_byte == msg.bytecodes["disconnect"]:
-                    self.disconnect(msg.sender)
+                    self.disconnect(msg.connection)
                     continue
                 if msg.control_byte == msg.bytecodes["heartbeat"]:
-                    self.heartbeat_timers[msg.sender] = time.time()
+                    self.heartbeat_timers[msg.connection] = time.time()
                     continue
                 print(f"{msg}")
             except queue.Empty:
