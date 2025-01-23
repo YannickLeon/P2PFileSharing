@@ -46,7 +46,7 @@ class Connection():
                         int.from_bytes(data[17:21], byteorder="big"),
                         data[21: 21 +
                              int.from_bytes(data[17:21], byteorder="big")],
-                        self
+                        self,
                     )
                 )
                 data = data[21 + int.from_bytes(data[17:21], byteorder="big"):]

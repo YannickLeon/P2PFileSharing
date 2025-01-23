@@ -16,12 +16,12 @@ class Message:
     }
 
     # Maybe change sender to be a reference to the connection object and add an addr field for broadcasts.
-    def __init__(self, control_byte: byte, unique_id: uuid.UUID, length: int = 0, content: bytes = b"", sender=None):
+    def __init__(self, control_byte: byte, unique_id: uuid.UUID, length: int = 0, content: bytes = b"", connection=None):
         self.control_byte: byte = byte(control_byte)
         self.length: int = length
         self.content: bytes = content
         self.uuid: uuid.UUID = unique_id
-        self.sender = sender
+        self.connection = connection
 
     def to_bytes(self) -> bytes:
         return (
@@ -32,4 +32,4 @@ class Message:
         )
 
     def __str__(self):
-        return f"[Message <b:{int(self.control_byte)}> <uuid:{self.uuid}> <len:{self.length}> <sdr:{self.sender.addr[0]}:{self.sender.addr[1]}>]"
+        return f"[Message <b:{int(self.control_byte)}> <uuid:{self.uuid}> <len:{self.length}> <sdr:{self.connection.addr[0]}:{self.connection.addr[1]}>]"
