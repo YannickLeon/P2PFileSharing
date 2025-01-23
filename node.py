@@ -76,6 +76,7 @@ class Node:
 
     # establish outgoing connection to peer
     def connect(self, addr, unique_id):
+        print(f"[i] Trying to connect with: {unique_id}")
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect(addr)
         peer = Connection("outgoing", addr, sock, self.q, unique_id)
@@ -175,7 +176,6 @@ class Node:
         while not self.stop:
             try:
                 msg: Message = self.q.get(block=False)
-                print(f"{msg}")
                 if msg.control_byte == msg.bytecodes["init"]:
                     if msg.length < 8:  # ignore if message is of insufficient length
                         continue
@@ -215,16 +215,8 @@ class Node:
                     continue
                 if msg.control_byte == msg.bytecodes["election"]:
                     if msg.uuid < self.uuid:
-                        # Respond with alive if uuid is greater than the initiator
-                        alive_msg = Message(
-                            Message.bytecodes["alive"], self.uuid)
-                        msg.connection.send_message(alive_msg)
                         # progate the election message further
                         self.start_election()
-                    continue
-                if msg.control_byte == msg.bytecodes["alive"]:
-                    print(
-                        f"[i] Received alive message from {msg.uuid}. A higher UUID is active.")
                     continue
                 if msg.control_byte == msg.bytecodes["leader"]:
                     if len(msg.content) < 16:
@@ -232,6 +224,7 @@ class Node:
                     self.leader_uuid = uuid.UUID(bytes=msg.content)
                     print(f"[i] New leader announced: {msg.uuid}")
                     continue
+                print(f"{msg}")
             except queue.Empty:
                 pass
         print("[i] Stopped message handler")
