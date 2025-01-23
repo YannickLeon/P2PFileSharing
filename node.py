@@ -87,7 +87,7 @@ class Node:
             self.start_election()
         else:
             peer.send_message(
-                Message(Message.bytecodes["leader"], self.uuid, 16, self.leader_uuid))
+                Message(Message.bytecodes["leader"], self.uuid, 16, self.leader_uuid.bytes))
         print(f"[i] New connection with {addr}")
 
     def disconnect(self, connection: Connection):
