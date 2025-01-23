@@ -208,7 +208,7 @@ class Node:
                     if msg.uuid < self.uuid:
                         # Respond with alive if uuid is greater than the initiator
                         alive_msg = Message(Message.bytecodes["alive"], self.uuid)
-                        msg.sender.send_message(alive_msg)
+                        msg.connection.send_message(alive_msg)
                         # progate the election message further
                         self.start_election()
                     elif msg.uuid > self.uuid:
