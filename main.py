@@ -46,6 +46,9 @@ def main():
         if user_input[0] == "l":
             node.leave()
             break
+        if user_input[0] == "elec":
+            node.start_election()
+            continue
         print("No such command.")
 
     print("Node Stopped!")

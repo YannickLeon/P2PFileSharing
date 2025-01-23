@@ -20,6 +20,7 @@ class Node:
         self.q: Queue = Queue()
         self.stop = False
         self.uuid = uuid.uuid4()
+        self.leader_uuid = None
         self.heartbeat_timers: dict[Connection, float] = {}
         # mutex to make sure heartbeat is not changed as it is being accessed
         self.heartbeat_mutex = Lock()
@@ -193,6 +194,23 @@ class Node:
                 if msg.control_byte == msg.bytecodes["heartbeat"]:
                     self.heartbeat_timers[msg.sender] = time.time()
                     continue
+
+                if msg.control_byte == msg.bytecodes["election"]:
+                    if msg.uuid < self.uuid:
+                        # Respond with alive if uuid is greater than the initiator
+                        alive_msg = Message(Message.bytecodes["alive"], self.uuid)
+                        msg.sender.send_message(alive_msg)
+                        # progate the election message further
+                        self.start_election()
+                    elif msg.uuid > self.uuid:
+                        # Ignore the election from lower uuids
+                        pass
+                if msg.control_byte == msg.bytecodes["alive"]:
+                     print(f"[i] Received alive message from {msg.uuid}. A higher UUID is active.")
+                if msg.control_byte == msg.bytecodes["leader"]:
+                    self.leader_uuid = msg.uuid
+                    print(f"[i] New leader announced: {msg.uuid}")
+
                 print(f"{msg}")
             except queue.Empty:
                 pass
@@ -201,7 +219,30 @@ class Node:
         print("[i] Stopped message handler")
 
     def list_peers(self):
+        print(f"Leader {self.leader_uuid}")
         print("*** Peers **************")
         for peer in self.peers:
             print(f"\t{peer.uuid}")
         print("************************")
+
+
+    def start_election(self):
+        print("Starting election...")
+        higher_nodes = [peer for peer in self.peers if peer.uuid>self.uuid]
+
+        if not higher_nodes:
+            # No higher node exists, this node becomes the leader
+            print(f"Node {self.uuid} becomes the leader")
+            self.announce_leader()
+
+        else:
+            # notifiy higer nodes of the election
+            for node in higher_nodes:
+                node.send_message(Message(Message.bytecodes["election"], self.uuid))
+
+    def announce_leader(self):
+        # announce this node as the leader
+        print(f"[i] Announcing self as leader: {self.uuid}")
+        self.leader_uuid = self.uuid
+        leader_msg = Message(Message.bytecodes["leader"], self.uuid)
+        self.message_peers(leader_msg)

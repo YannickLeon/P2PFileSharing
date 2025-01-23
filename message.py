@@ -10,6 +10,9 @@ class Message:
         "heartbeat": 3,
         "data": 10,
         "data_end": 11,
+        "election": 20,     
+        "alive": 21,        
+        "leader": 22,   
     }
 
     # Maybe change sender to be a reference to the connection object and add an addr field for broadcasts.
