@@ -4,7 +4,6 @@ from threading import Thread
 from queue import Queue
 import select
 import uuid
-import time
 
 from message import Message
 
@@ -25,6 +24,7 @@ class Connection():
 
     # Listen to messages
     def listen(self):
+        print(f"listening on {self.addr}")
         data = b""
         while not self.stop:
             try:

@@ -11,7 +11,7 @@ from message import Message
 from connection import Connection
 
 BC_ADDR = ("0.0.0.0", 9000)
-HEARTBEAT_INTERVAL = 1
+HEARTBEAT_INTERVAL = 3
 
 
 class Node:
@@ -55,8 +55,8 @@ class Node:
         self.heartbeat_thread.start()
 
         # thread for sending discovery broadcast (needs to be implemented properly)
-        self.init_thread = Thread(target=self.discovery)
-        self.init_thread.start()
+        self.discovery_thread = Thread(target=self.discovery)
+        self.discovery_thread.start()
 
     def discovery(self):
         segments = self.sock.getsockname()[0].split(".")
@@ -67,7 +67,7 @@ class Node:
             length=4, byteorder="big", signed=False)
         while not self.stop:
             if len(self.peers) > 0:
-                time.sleep(2)
+                time.sleep(0.5)
                 continue
             print("[i] Sending discovery broadcast...")
             self.send_broadcast(
@@ -82,19 +82,19 @@ class Node:
         peer.send_message(Message(Message.bytecodes["identify"], self.uuid))
         # send current leader uuid to newly connected peer if exists, if not exists trigger election
         self.peers.append(peer)
+        print(f"[i] New connection with {addr}")
         self.heartbeat_timers[peer] = time.time()
         if not self.leader_uuid:
             self.start_election()
         else:
             peer.send_message(
                 Message(Message.bytecodes["leader"], self.uuid, 16, self.leader_uuid.bytes))
-        print(f"[i] New connection with {addr}")
 
     def disconnect(self, connection: Connection):
         connection.close()
         print(f"[i] Disconnected peer {connection.uuid}")
         self.heartbeat_mutex.acquire()
-        self.heartbeat_timers.pop(connection)
+        del self.heartbeat_timers[connection]
         self.heartbeat_mutex.release()
         self.peers.remove(connection)
         # we need to make sure all peers have the same list of peers before starting the election
@@ -175,6 +175,7 @@ class Node:
         while not self.stop:
             try:
                 msg: Message = self.q.get(block=False)
+                print(f"{msg}")
                 if msg.control_byte == msg.bytecodes["init"]:
                     if msg.length < 8:  # ignore if message is of insufficient length
                         continue
@@ -212,7 +213,6 @@ class Node:
                 if msg.control_byte == msg.bytecodes["heartbeat"]:
                     self.heartbeat_timers[msg.connection] = time.time()
                     continue
-
                 if msg.control_byte == msg.bytecodes["election"]:
                     if msg.uuid < self.uuid:
                         # Respond with alive if uuid is greater than the initiator
@@ -221,19 +221,17 @@ class Node:
                         msg.connection.send_message(alive_msg)
                         # progate the election message further
                         self.start_election()
-                    elif msg.uuid > self.uuid:
-                        # Ignore the election from lower uuids
-                        pass
+                    continue
                 if msg.control_byte == msg.bytecodes["alive"]:
                     print(
                         f"[i] Received alive message from {msg.uuid}. A higher UUID is active.")
+                    continue
                 if msg.control_byte == msg.bytecodes["leader"]:
                     if len(msg.content) < 16:
                         continue
                     self.leader_uuid = uuid.UUID(bytes=msg.content)
                     print(f"[i] New leader announced: {msg.uuid}")
-
-                print(f"{msg}")
+                    continue
             except queue.Empty:
                 pass
         print("[i] Stopped message handler")
@@ -254,7 +252,6 @@ class Node:
         if not higher_nodes:
             # No higher node exists, this node becomes the leader
             self.announce_leader(self.uuid)
-
         else:
             # notifiy higer nodes of the election
             for node in higher_nodes:
