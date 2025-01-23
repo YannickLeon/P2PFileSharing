@@ -222,7 +222,7 @@ class Node:
                     if len(msg.content) < 16:
                         continue
                     self.leader_uuid = uuid.UUID(bytes=msg.content)
-                    print(f"[i] New leader announced: {msg.uuid}")
+                    print(f"[i] New leader announced: {self.leader_uuid}")
                     continue
                 print(f"{msg}")
             except queue.Empty:
