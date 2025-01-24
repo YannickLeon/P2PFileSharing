@@ -1,4 +1,5 @@
 from numpy import byte
+import numpy as np
 import uuid
 
 
@@ -16,20 +17,22 @@ class Message:
     }
 
     # Maybe change sender to be a reference to the connection object and add an addr field for broadcasts.
-    def __init__(self, control_byte: byte, unique_id: uuid.UUID, length: int = 0, content: bytes = b"", connection=None):
+    def __init__(self, control_byte: byte, sender_uuid: uuid.UUID, length: int = 0, content: bytes = b"", id: np.uint16 = np.uint16(0), connection=None):
         self.control_byte: byte = byte(control_byte)
         self.length: int = length
+        self.sender_uuid: uuid.UUID = sender_uuid
+        self.id: np.uint16 = id
         self.content: bytes = content
-        self.uuid: uuid.UUID = unique_id
         self.connection = connection
 
     def to_bytes(self) -> bytes:
         return (
             self.control_byte.tobytes()
-            + self.uuid.bytes
+            + self.sender_uuid.bytes
+            + self.id.tobytes()
             + self.length.to_bytes(length=4, byteorder="big", signed=False)
             + self.content
         )
 
     def __str__(self):
-        return f"[Message <b:{int(self.control_byte)}> <uuid:{self.uuid}> <len:{self.length}> <sdr:{self.connection.addr[0]}:{self.connection.addr[1]}>]"
+        return f"[Message <b:{int(self.control_byte)}> <uuid:{self.sender_uuid}> <id:{self.id}> <len:{self.length}> <sdr:{self.connection.addr[0]}:{self.connection.addr[1]}>]"

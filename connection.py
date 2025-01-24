@@ -24,7 +24,6 @@ class Connection():
 
     # Listen to messages
     def listen(self):
-        print(f"listening on {self.addr}")
         data = b""
         while not self.stop:
             try:
@@ -35,21 +34,22 @@ class Connection():
                 data += content
                 if (
                     not data
-                    or len(data) < 21
-                    or (len(data) - 21) < int.from_bytes(data[17:21], byteorder="big")
+                    or len(data) < 23
+                    or (len(data) - 23) < int.from_bytes(data[19:23], byteorder="big")
                 ):
                     continue
                 self.q.put(
                     Message(
-                        np.byte(data[0]),
-                        uuid.UUID(bytes=data[1:17]),
-                        int.from_bytes(data[17:21], byteorder="big"),
-                        data[21: 21 +
-                             int.from_bytes(data[17:21], byteorder="big")],
-                        self,
+                        control_byte=np.byte(data[0]),
+                        sender_uuid=uuid.UUID(bytes=data[1:17]),
+                        id=np.frombuffer(data[17:19], dtype=np.uint16),
+                        length=int.from_bytes(data[19:23], byteorder="big"),
+                        content=data[23: 23 +
+                                     int.from_bytes(data[19:23], byteorder="big")],
+                        connection=self,
                     )
                 )
-                data = data[21 + int.from_bytes(data[17:21], byteorder="big"):]
+                data = data[23 + int.from_bytes(data[19:23], byteorder="big"):]
             except socket.error:
                 print("[!] Connection error while receiving data.")
                 break
@@ -65,5 +65,4 @@ class Connection():
         self.stop = True
         self.listener_thread.join()
         self.sock.close()
-        print(
-            f"[i] Closed connection to {self.uuid if self.uuid else self.addr}.")
+        # print(f"[i] Closed connection to {self.uuid if self.uuid else self.addr}.")

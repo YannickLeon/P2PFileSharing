@@ -21,8 +21,13 @@ class Node:
         self.stop = False
         self.uuid = uuid.uuid4()
         self.leader_uuid = None
+        # 0 is reserved to identify non-multicast messages (don't need to be propagated)
+        self.multicast_counter: np.uint16 = 1
+        # dict to store the multicast counters for each peer
+        self.multicast_dict: dict[uuid.UUID, np.uint16] = {}
+        # dict to store the missed counters to later accept them
+        self.missed_multicasts: dict[uuid.UUID, list[np.uint16]] = {}
         self.heartbeat_timers: dict[Connection, float] = {}
-        # mutex to make sure heartbeat dict is not changed as it is being accessed
         self.heartbeat_mutex = Lock()
         # mutex to deal with threading issues when accepting and identifying new peers
         self.mutex = Lock()
@@ -44,7 +49,7 @@ class Node:
         bc_listen.bind(BC_ADDR)
         self.bc_listen = Connection("broadcast", BC_ADDR, bc_listen, self.q)
 
-        # connection and message handler threads
+        # Threads
         self.connection_thread = Thread(target=self.connection_handler)
         self.connection_thread.start()
         self.message_thread = Thread(target=self.message_handler)
@@ -53,8 +58,6 @@ class Node:
         self.heartbeat_checker_thread.start()
         self.heartbeat_thread = Thread(target=self.send_heartbeat)
         self.heartbeat_thread.start()
-
-        # thread for sending discovery broadcast (needs to be implemented properly)
         self.discovery_thread = Thread(target=self.discovery)
         self.discovery_thread.start()
 
@@ -74,6 +77,12 @@ class Node:
                 Message(Message.bytecodes["init"], self.uuid, 8, content))
             time.sleep(5)
 
+    def add_peer(self, peer: Connection):
+        self.peers.append(peer)
+        self.heartbeat_mutex.acquire()
+        self.heartbeat_timers[peer] = time.time()
+        self.heartbeat_mutex.release()
+
     # establish outgoing connection to peer
     def connect(self, addr, unique_id):
         print(f"[i] Trying to connect with: {unique_id}")
@@ -81,10 +90,11 @@ class Node:
         sock.connect(addr)
         peer = Connection("outgoing", addr, sock, self.q, unique_id)
         peer.send_message(Message(Message.bytecodes["identify"], self.uuid))
-        # send current leader uuid to newly connected peer if exists, if not exists trigger election
-        self.peers.append(peer)
         print(f"[i] New connection with {addr}")
-        self.heartbeat_timers[peer] = time.time()
+        self.add_peer(peer)
+        self.multicast_dict[peer.uuid] = 0
+        self.missed_multicasts[peer.uuid] = []
+        # send current leader uuid to newly connected peer if exists, if not exists trigger election
         if not self.leader_uuid:
             self.start_election()
         else:
@@ -95,6 +105,8 @@ class Node:
         connection.close()
         print(f"[i] Disconnected peer {connection.uuid}")
         self.heartbeat_mutex.acquire()
+        del self.multicast_dict[connection.uuid]
+        del self.missed_multicasts[connection.uuid]
         del self.heartbeat_timers[connection]
         self.heartbeat_mutex.release()
         self.peers.remove(connection)
@@ -110,19 +122,24 @@ class Node:
         self.connection_thread.join()
         self.heartbeat_checker_thread.join()
         self.heartbeat_thread.join()
+        self.message_peers(Message(Message.bytecodes["disconnect"], self.uuid))
         for peer in self.peers:
-            peer.send_message(
-                Message(Message.bytecodes["disconnect"], self.uuid))
             peer.close()
         self.peers.clear()
         self.sock.close()
 
     def send_broadcast(self, msg: Message):
-        # print(f"[i] Sending broadcast: {msg}")
         self.bc_sock.sendto(msg.to_bytes(), ('<broadcast>', 9000))
 
     # send message to all peers
-    def message_peers(self, msg: Message):
+    def message_peers(self, msg: Message, set_multicast_counter=True):
+        # overflow is planned, when max_int is reached we continue at 0
+        if set_multicast_counter:
+            msg.id = np.uint16(self.multicast_counter)
+            if self.multicast_counter < np.iinfo(np.uint16).max:
+                self.multicast_counter += 1
+            else:
+                self.multicast_counter = 1
         for peer in self.peers:
             peer.send_message(msg)
 
@@ -140,10 +157,7 @@ class Node:
                 if any(peer.addr == addr for peer in self.peers):
                     continue
                 peer = Connection("incoming", addr, conn, self.q)
-                self.peers.append(peer)
-                self.heartbeat_mutex.acquire()
-                self.heartbeat_timers[peer] = time.time()
-                self.heartbeat_mutex.release()
+                self.add_peer(peer)
                 print(f"[i] New connection by {addr}")
                 self.mutex.release()
             except:
@@ -168,18 +182,53 @@ class Node:
     def send_heartbeat(self):
         while not self.stop:
             self.message_peers(
-                Message(Message.bytecodes["heartbeat"], self.uuid))
+                Message(Message.bytecodes["heartbeat"], self.uuid), set_multicast_counter=False)
             time.sleep(HEARTBEAT_INTERVAL)
 
-    # TODO: implement functionality for each message
+    def forward_multicast(self, msg: Message) -> bool:
+        # Special case if a peer has disconnected but an old message forwarded
+        if not msg.sender_uuid in self.missed_multicasts or not msg.sender_uuid in self.multicast_dict:
+            return False
+        if msg.id in self.missed_multicasts[msg.sender_uuid]:
+            # self.message_peers(msg, set_multicast_counter=False)
+            self.missed_multicasts[msg.sender_uuid].remove(msg.id)
+            Thread(target=self.message_peers, args=[msg, False]).start()
+            return True
+        if msg.id > self.multicast_dict[msg.sender_uuid]:
+            self.missed_multicasts[msg.sender_uuid].extend(
+                [np.uint16(i) for i in range(int(self.multicast_dict[msg.sender_uuid]+1), int(msg.id))])
+            self.multicast_dict[msg.sender_uuid] = msg.id
+            Thread(target=self.message_peers, args=[msg, False]).start()
+            # self.message_peers(msg, set_multicast_counter=False)
+            return True
+        # if msg id is much smaller than the counter for that peer, we assume an overflow has happened and act as if it was larger
+        if self.multicast_dict[msg.sender_uuid] - msg.id > (np.iinfo(np.uint16).max/2):
+            self.missed_multicasts[msg.sender_uuid].extend(
+                [np.uint16(i) for i in range(int(self.multicast_dict[msg.sender_uuid]+1), int(np.iinfo(np.uint16).max))])
+            self.missed_multicasts[msg.sender_uuid].extend(
+                [np.uint16(i) for i in range(1, int(msg.id))])
+            self.multicast_dict[msg.sender_uuid] = msg.id
+            Thread(target=self.message_peers, args=[msg, False]).start()
+            # self.message_peers(msg, set_multicast_counter=False)
+            return True
+        return False
+
+    # INFO: For all messages that can be sent as multicasts we cannot rely on using the msg.connection attribute,
+    # instead use msg.uuid and select the peer that way (see disconnect for an example)
     def message_handler(self):
         while not self.stop:
             try:
                 msg: Message = self.q.get(block=False)
+                if msg.sender_uuid == self.uuid:  # ignore own messages
+                    continue
+                if msg.id != 0:  # check if message is a multicast
+                    # if the return value is False, we can ignore the message and continue as we already processed it
+                    if not self.forward_multicast(msg):
+                        continue
                 if msg.control_byte == msg.bytecodes["init"]:
                     if msg.length < 8:  # ignore if message is of insufficient length
                         continue
-                    if any(peer.uuid == msg.uuid for peer in self.peers) or self.uuid == msg.uuid:
+                    if any(peer.uuid == msg.sender_uuid for peer in self.peers) or self.uuid == msg.sender_uuid:
                         continue
                     ip = ""
                     for d in msg.content[:4]:
@@ -189,32 +238,36 @@ class Node:
                         msg.content[4:8], byteorder="big", signed=False)
                     if any(peer.addr == (ip, port) for peer in self.peers):
                         continue
-                    self.connect((ip, port), msg.uuid)
+                    self.connect((ip, port), msg.sender_uuid)
                     continue
                 if msg.control_byte == msg.bytecodes["identify"]:
                     # mutex to avoid identifying peers before adding them to the peer list
                     self.mutex.acquire(blocking=True)
-                    print(
-                        f"[i] Received identification from {msg.connection.addr}")
+                    # print(f"[i] Received identification from {msg.connection.addr}")
                     # remove peer if its a duplicate, not sure if needed
-                    if any(peer.uuid == msg.uuid and msg.connection != peer for peer in self.peers):
-                        print(f"\t Duplicate peer found!")
+                    if any(peer.uuid == msg.sender_uuid and msg.connection != peer for peer in self.peers):
+                        # print(f"\tDuplicate peer found!")
                         msg.connection.send_message(
                             Message(Message.bytecodes["disconnect"], self.uuid))
                         self.disconnect(msg.connection)
                         continue
-                    print(f"\t Peer found!")
-                    msg.connection.uuid = msg.uuid
+                    # print(f"\tPeer found!")
+                    msg.connection.uuid = msg.sender_uuid
+                    self.multicast_dict[msg.connection.uuid] = 0
+                    self.missed_multicasts[msg.connection.uuid] = []
                     self.mutex.release()
                     continue
                 if msg.control_byte == msg.bytecodes["disconnect"]:
-                    self.disconnect(msg.connection)
+                    for peer in self.peers:
+                        if peer.uuid == msg.sender_uuid:
+                            self.disconnect(peer)
+                            continue
                     continue
                 if msg.control_byte == msg.bytecodes["heartbeat"]:
                     self.heartbeat_timers[msg.connection] = time.time()
                     continue
                 if msg.control_byte == msg.bytecodes["election"]:
-                    if msg.uuid < self.uuid:
+                    if msg.sender_uuid < self.uuid:
                         # progate the election message further
                         self.start_election()
                     continue
@@ -222,7 +275,8 @@ class Node:
                     if len(msg.content) < 16:
                         continue
                     self.leader_uuid = uuid.UUID(bytes=msg.content)
-                    print(f"[i] New leader announced: {self.leader_uuid}")
+                    print(
+                        f"[i] New leader announced: <{msg.sender_uuid}:{msg.id}>{self.leader_uuid}")
                     continue
                 print(f"{msg}")
             except queue.Empty:
@@ -238,6 +292,8 @@ class Node:
             print(f"\t{peer.uuid}")
         print("************************")
 
+    # is it enough to just announce oneself as a leader if we have the highest uuid?
+    # We already have a list of connected peers with the highest uuid as a consistent state.
     def start_election(self):
         print("Starting election...")
         higher_nodes = [peer for peer in self.peers if peer.uuid > self.uuid]
@@ -246,7 +302,6 @@ class Node:
             # No higher node exists, this node becomes the leader
             self.announce_leader(self.uuid)
         else:
-            # notifiy higer nodes of the election
             for node in higher_nodes:
                 node.send_message(
                     Message(Message.bytecodes["election"], self.uuid))
