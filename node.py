@@ -94,9 +94,10 @@ class Node:
         self.add_peer(peer)
         self.multicast_dict[peer.uuid] = 0
         self.missed_multicasts[peer.uuid] = []
-        # send current leader uuid to newly connected peer if exists, if not exists trigger election
+        # send current leader uuid to newly connected peer if exists, if not exists and own uuid is lowest, trigger election
         if not self.leader_uuid:
-            self.start_election()
+            if all(self.uuid < peer.uuid for peer in self.peers):
+                self.start_election()
         else:
             peer.send_message(
                 Message(Message.bytecodes["leader"], self.uuid, 16, self.leader_uuid.bytes))
@@ -111,7 +112,8 @@ class Node:
         self.heartbeat_mutex.release()
         # we need to make sure all peers have the same list of peers before starting the election
         if connection.uuid == self.leader_uuid:
-            self.start_election()
+            if all(self.uuid < peer.uuid for peer in self.peers):
+                self.start_election()
 
     # notify peers and close all connections
     def leave(self):
