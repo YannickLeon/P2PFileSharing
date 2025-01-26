@@ -11,7 +11,7 @@ from message import Message
 from connection import Connection
 
 BC_ADDR = ("0.0.0.0", 9000)
-HEARTBEAT_INTERVAL = 1
+HEARTBEAT_INTERVAL = 0.5
 
 
 class Node:
@@ -82,13 +82,15 @@ class Node:
         self.heartbeat_mutex.release()
 
     # establish outgoing connection to peer
-    def connect(self, addr, unique_id):
-        print(f"[i] Trying to connect with: {unique_id}")
+    def connect(self, addr, msg: Message):
+        print(f"[i] Trying to connect with: {msg.sender_uuid}")
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect(addr)
-        peer = Connection("outgoing", addr, sock, self.q, unique_id)
+        peer = Connection("outgoing", addr, sock, self.q, msg.sender_uuid)
         peer.send_message(Message(Message.bytecodes["identify"], self.uuid))
         print(f"[i] New connection with {addr}")
+        # simply send message to all peers without forwarding to maintain consistent state (message is "self forwarding")
+        Thread(target=self.message_peers, args=[msg, False]).start()
         self.add_peer(peer)
         self.multicast_dict[peer.uuid] = 0
         self.missed_multicasts[peer.uuid] = []
@@ -119,7 +121,8 @@ class Node:
         self.connection_thread.join()
         self.heartbeat_checker_thread.join()
         self.heartbeat_thread.join()
-        self.message_peers(Message(Message.bytecodes["disconnect"], self.uuid))
+        self.message_peers(
+            Message(Message.bytecodes["disconnect"], self.uuid, 16, self.uuid.bytes))
         for peer in self.peers:
             peer.close()
         self.peers.clear()
@@ -167,13 +170,17 @@ class Node:
             removeable = []
             self.heartbeat_mutex.acquire()
             for peer in self.peers:
-                if peer.heartbeat + (3*HEARTBEAT_INTERVAL) < time.time():
+                if peer.heartbeat + (5*HEARTBEAT_INTERVAL) < time.time():
                     removeable.append(peer)
             self.heartbeat_mutex.release()
             for peer in removeable:
                 if peer in self.peers:
                     print(f"[i] No heartbeat from {peer.uuid}")
-                    # TODO: send notification to all peers to maintain consistent state
+                    # suspect failure and send notification to all peers to maintain consistent state
+                    msg = Message(
+                        Message.bytecodes["disconnect"], self.uuid, 16, peer.uuid.bytes)
+                    Thread(target=self.message_peers,
+                           args=[msg, True]).start()
                     self.disconnect(peer)
             time.sleep(HEARTBEAT_INTERVAL - (time.time() - t))
 
@@ -227,7 +234,7 @@ class Node:
                 if msg.control_byte == msg.bytecodes["init"]:
                     if msg.length < 8:  # ignore if message is of insufficient length
                         continue
-                    if any(peer.uuid == msg.sender_uuid for peer in self.peers) or self.uuid == msg.sender_uuid:
+                    if any(peer.uuid == msg.sender_uuid for peer in self.peers):
                         continue
                     ip = ""
                     for d in msg.content[:4]:
@@ -237,28 +244,21 @@ class Node:
                         msg.content[4:8], byteorder="big", signed=False)
                     if any(peer.addr == (ip, port) for peer in self.peers):
                         continue
-                    self.connect((ip, port), msg.sender_uuid)
+                    self.connect((ip, port), msg)
                     continue
                 if msg.control_byte == msg.bytecodes["identify"]:
                     # mutex to avoid identifying peers before adding them to the peer list
                     self.mutex.acquire(blocking=True)
                     # print(f"[i] Received identification from {msg.connection.addr}")
-                    # remove peer if its a duplicate, not sure if needed
-                    if any(peer.uuid == msg.sender_uuid and msg.connection != peer for peer in self.peers):
-                        # print(f"\tDuplicate peer found!")
-                        msg.connection.send_message(
-                            Message(Message.bytecodes["disconnect"], self.uuid))
-                        self.disconnect(msg.connection)
-                        continue
-                    # print(f"\tPeer found!")
                     msg.connection.uuid = msg.sender_uuid
                     self.multicast_dict[msg.connection.uuid] = 0
                     self.missed_multicasts[msg.connection.uuid] = []
                     self.mutex.release()
                     continue
                 if msg.control_byte == msg.bytecodes["disconnect"]:
+                    peer_id = uuid.UUID(bytes=msg.content)
                     for peer in self.peers:
-                        if peer.uuid == msg.sender_uuid:
+                        if peer.uuid == peer_id:
                             self.disconnect(peer)
                             continue
                     continue
