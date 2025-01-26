@@ -11,7 +11,7 @@ from message import Message
 from connection import Connection
 
 BC_ADDR = ("0.0.0.0", 9000)
-HEARTBEAT_INTERVAL = 3
+HEARTBEAT_INTERVAL = 1
 
 
 class Node:
@@ -27,7 +27,6 @@ class Node:
         self.multicast_dict: dict[uuid.UUID, np.uint16] = {}
         # dict to store the missed counters to later accept them
         self.missed_multicasts: dict[uuid.UUID, list[np.uint16]] = {}
-        self.heartbeat_timers: dict[Connection, float] = {}
         self.heartbeat_mutex = Lock()
         # mutex to deal with threading issues when accepting and identifying new peers
         self.mutex = Lock()
@@ -78,9 +77,8 @@ class Node:
             time.sleep(5)
 
     def add_peer(self, peer: Connection):
-        self.peers.append(peer)
         self.heartbeat_mutex.acquire()
-        self.heartbeat_timers[peer] = time.time()
+        self.peers.append(peer)
         self.heartbeat_mutex.release()
 
     # establish outgoing connection to peer
@@ -104,12 +102,11 @@ class Node:
     def disconnect(self, connection: Connection):
         connection.close()
         print(f"[i] Disconnected peer {connection.uuid}")
-        self.heartbeat_mutex.acquire()
         del self.multicast_dict[connection.uuid]
         del self.missed_multicasts[connection.uuid]
-        del self.heartbeat_timers[connection]
-        self.heartbeat_mutex.release()
+        self.heartbeat_mutex.acquire()
         self.peers.remove(connection)
+        self.heartbeat_mutex.release()
         # we need to make sure all peers have the same list of peers before starting the election
         if connection.uuid == self.leader_uuid:
             self.start_election()
@@ -166,11 +163,11 @@ class Node:
 
     def check_heartbeat(self):
         while not self.stop:
-            time.sleep(1)
+            t = time.time()
             removeable = []
             self.heartbeat_mutex.acquire()
-            for peer, timer in self.heartbeat_timers.items():
-                if timer + (2*HEARTBEAT_INTERVAL) < time.time():
+            for peer in self.peers:
+                if peer.heartbeat + (3*HEARTBEAT_INTERVAL) < time.time():
                     removeable.append(peer)
             self.heartbeat_mutex.release()
             for peer in removeable:
@@ -178,12 +175,14 @@ class Node:
                     print(f"[i] No heartbeat from {peer.uuid}")
                     # TODO: send notification to all peers to maintain consistent state
                     self.disconnect(peer)
+            time.sleep(HEARTBEAT_INTERVAL - (time.time() - t))
 
     def send_heartbeat(self):
         while not self.stop:
+            t = time.time()
             self.message_peers(
                 Message(Message.bytecodes["heartbeat"], self.uuid), set_multicast_counter=False)
-            time.sleep(HEARTBEAT_INTERVAL)
+            time.sleep(HEARTBEAT_INTERVAL - (time.time() - t))
 
     def forward_multicast(self, msg: Message) -> bool:
         # Special case if a peer has disconnected but an old message forwarded
@@ -262,9 +261,6 @@ class Node:
                         if peer.uuid == msg.sender_uuid:
                             self.disconnect(peer)
                             continue
-                    continue
-                if msg.control_byte == msg.bytecodes["heartbeat"]:
-                    self.heartbeat_timers[msg.connection] = time.time()
                     continue
                 if msg.control_byte == msg.bytecodes["election"]:
                     if msg.sender_uuid < self.uuid:

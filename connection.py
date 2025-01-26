@@ -4,6 +4,7 @@ from threading import Thread
 from queue import Queue
 import select
 import uuid
+import time
 
 from message import Message
 
@@ -14,6 +15,7 @@ class Connection():
         self.addr = addr
         self.sock = sock
         self.q = q
+        self.heartbeat = time.time()
         self.uuid = unique_id
         self.stop = False
 
@@ -38,17 +40,20 @@ class Connection():
                     or (len(data) - 23) < int.from_bytes(data[19:23], byteorder="big")
                 ):
                     continue
-                self.q.put(
-                    Message(
-                        control_byte=np.byte(data[0]),
-                        sender_uuid=uuid.UUID(bytes=data[1:17]),
-                        id=np.frombuffer(data[17:19], dtype=np.uint16),
-                        length=int.from_bytes(data[19:23], byteorder="big"),
-                        content=data[23: 23 +
-                                     int.from_bytes(data[19:23], byteorder="big")],
-                        connection=self,
-                    )
+                msg = Message(
+                    control_byte=np.byte(data[0]),
+                    sender_uuid=uuid.UUID(bytes=data[1:17]),
+                    id=np.frombuffer(data[17:19], dtype=np.uint16),
+                    length=int.from_bytes(data[19:23], byteorder="big"),
+                    content=data[23: 23 +
+                                 int.from_bytes(data[19:23], byteorder="big")],
+                    connection=self,
                 )
+                if msg.control_byte == msg.bytecodes["heartbeat"]:
+                    self.heartbeat = time.time()
+                    # print(f"[i] Received heartbeat: {msg.sender_uuid}")
+                else:
+                    self.q.put(msg)
                 data = data[23 + int.from_bytes(data[19:23], byteorder="big"):]
             except socket.error:
                 print("[!] Connection error while receiving data.")
