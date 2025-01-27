@@ -25,3 +25,8 @@ For reliable mutlicasting, we take advantage of TCPs reliability guarantees and 
 In order to maintain a consistent group view among all peers we notify every peer when a new node joins the network or when a node leaves the network. Since we know that our multicasts are reliable, it is sufficient to simply send these "events" instead of comparing entire states. To monitor connections to other peers we use the heartbeat protocoll. Even if only one peer detects a connection failure via that protocoll, it will inform the entire network about it and all nodes will suspect a failure of that node. In the event that the suspected node is however still running, it can simply rejoin the network by using a discovery broadcast.
 ### Files
 The same is true for files, as long as we carefully multicast events we can achieve a consistent state. We use multicasting to automatically deregister files of a suspected node and every node can use mutlicasts to manually register and deregister files. When a new node joins the network, each peer will inform it of the files it offers using a tcp unicast.
+
+## Dynamic Discovery
+While a node does not know of any other peers it will periodically send a broadcast on the designated port. This broadcast message contains its ip and port, as well as its uuid. When this message is received by any other peer, it will establish a tcp connection and inform all other nodes about the newly joined peer. After the connection is established, an identification message containing the uuid is immediately sent to the freshly joined node.
+## Election
+We use the Bully election algorithm. An election is started, when the leader disconnects or when a new node joins and no leader is currently elected.
