@@ -17,7 +17,7 @@ from file import File
 from file_part import FilePart
 
 BC_ADDR = ("0.0.0.0", 9000)
-HEARTBEAT_INTERVAL = 0.3
+HEARTBEAT_INTERVAL = 0.4
 
 
 class Node:
@@ -341,7 +341,7 @@ class Node:
             removeable = []
             self.heartbeat_mutex.acquire()
             for peer in self.peers:
-                if peer.heartbeat + (10*HEARTBEAT_INTERVAL) < time.time():
+                if peer.heartbeat + (8*HEARTBEAT_INTERVAL) < time.time():
                     removeable.append(peer)
             self.heartbeat_mutex.release()
             for peer in removeable:
@@ -353,7 +353,9 @@ class Node:
                     Thread(target=self.message_peers,
                            args=[msg, True]).start()
                     self.disconnect(peer)
-            time.sleep(HEARTBEAT_INTERVAL - (time.time() - t))
+            interval = HEARTBEAT_INTERVAL > time.time() - t
+            if interval > 0:
+                time.sleep(interval)
 
     def send_heartbeat(self):
         while not self.stop:
