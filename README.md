@@ -3,7 +3,7 @@ A local peer-to-peer file sharing application developed as a student project for
 
 ## Messages
 ### Structure
-|control-byte|uuid|id|length|content|
+|control-byte|uuid|multicast-id|length|content|
 |------------|----|--|------|-------|
 |1 byte|16 byte|16 byte|4 byte|?|
 ### Types
@@ -17,3 +17,5 @@ A local peer-to-peer file sharing application developed as a student project for
 |de-register|11|20|hash(20byte)|
 |election|20|0|-|
 |leader|22|16|leader-uuid|
+### Reliability
+For reliable mutlicasting, we take advantage of TCPs reliability guarantees and simply use a series of unicasts. However, this creates the possibility of a peer dying before having sent the message to all peers. In order to deal with this, we simply forward every multicast received to all other peers exactly once. This guarantees that either all or none of the peers receive a multicast.
