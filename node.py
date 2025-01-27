@@ -362,7 +362,9 @@ class Node:
             t = time.time()
             self.message_peers(
                 Message(Message.bytecodes["heartbeat"], self.uuid), set_multicast_counter=False)
-            time.sleep(HEARTBEAT_INTERVAL - (time.time() - t))
+            interval = HEARTBEAT_INTERVAL - (time.time() - t)
+            if interval > 0:
+                time.sleep(interval)
 
     def forward_multicast(self, msg: Message) -> bool:
         # Special case if a peer has disconnected but an old message forwarded
