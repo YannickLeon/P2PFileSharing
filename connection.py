@@ -10,11 +10,12 @@ from message import Message
 
 
 class Connection():
-    def __init__(self, mode: str, addr: tuple[str, int], sock: socket.socket, q: Queue, unique_id: uuid.UUID = None):
+    def __init__(self, mode: str, addr: tuple[str, int], sock: socket.socket, q: Queue, file_q: Queue, unique_id: uuid.UUID = None):
         self.mode = mode
         self.addr = addr
         self.sock = sock
         self.q = q
+        self.file_q = file_q
         self.heartbeat = time.time()
         self.uuid = unique_id
         self.stop = False
@@ -54,7 +55,8 @@ class Connection():
                 )
                 if msg.control_byte == msg.bytecodes["heartbeat"]:
                     self.heartbeat = time.time()
-                    # print(f"[i] Received heartbeat: {msg.sender_uuid}")
+                elif msg.control_byte == msg.bytecodes["data"] or msg.control_byte == msg.bytecodes["dataend"]:
+                    self.file_q.put(msg)
                 else:
                     self.q.put(msg)
                 data = data[23 + int.from_bytes(data[19:23], byteorder="big"):]

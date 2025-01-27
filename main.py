@@ -43,8 +43,8 @@ def main():
         if user_input[0] == "lf":
             node.list_files()
             continue
-        if user_input[0] == "df":
-            files = node.list_files(True)
+        if user_input[0] == "df" or user_input[0] == "gf":
+            files = node.list_files(user_input[0] == "df")
             try:
                 file_input = int(input("select file index:"))
             except Exception:
@@ -52,7 +52,10 @@ def main():
             if file_input < 0 or file_input > len(files)-1:
                 print("Invalid input!")
                 continue
-            node.deregister_file(files[file_input])
+            if user_input[0] == "df":
+                node.deregister_file(files[file_input])
+                continue
+            node.request_file(files[file_input])
             continue
         if user_input[0] == "lp":
             node.list_peers()

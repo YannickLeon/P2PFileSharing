@@ -8,7 +8,7 @@ class File:
         self.name = name
         self.size = size
         self.providers = providers
-        self.file_path = file_hash
+        self.file_path = file_path
 
     def __str__(self):
         string = f"\t{self.name} {self.size}byte <hash:{self.hash.hex()}>\n"
