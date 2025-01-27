@@ -517,7 +517,8 @@ class Node:
 
     def start_election(self):
         print("Starting election...")
-        higher_nodes = [peer for peer in self.peers if peer.uuid > self.uuid]
+        higher_nodes = [peer for peer in self.peers if peer.uuid !=
+                        None and peer.uuid > self.uuid]
 
         if not higher_nodes:
             # No higher node exists, this node becomes the leader
