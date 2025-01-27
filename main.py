@@ -37,6 +37,23 @@ def main():
                     user_input[2]), user_input[3].encode("utf-8"))
             node.send_broadcast(msg)
             continue
+        if user_input[0] == "rf":
+            node.register_file(user_input[1])
+            continue
+        if user_input[0] == "lf":
+            node.list_files()
+            continue
+        if user_input[0] == "df":
+            files = node.list_files(True)
+            try:
+                file_input = int(input("select file index:"))
+            except Exception:
+                continue
+            if file_input < 0 or file_input > len(files)-1:
+                print("Invalid input!")
+                continue
+            node.deregister_file(files[file_input])
+            continue
         if user_input[0] == "lp":
             node.list_peers()
             continue

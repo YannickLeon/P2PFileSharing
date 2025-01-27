@@ -6,9 +6,13 @@ from queue import Queue
 from threading import Thread, Lock
 import numpy as np
 import time
+import hashlib
+import os
+import traceback
 
 from message import Message
 from connection import Connection
+from file import File
 
 BC_ADDR = ("0.0.0.0", 9000)
 HEARTBEAT_INTERVAL = 0.5
@@ -17,17 +21,15 @@ HEARTBEAT_INTERVAL = 0.5
 class Node:
     def __init__(self, ip: str, port: int = 0):
         self.peers: list[Connection] = []
+        self.files: dict[bytes, File] = {}
         self.q: Queue = Queue()
         self.stop = False
         self.uuid = uuid.uuid4()
         self.leader_uuid = None
         # 0 is reserved to identify non-multicast messages (don't need to be propagated)
         self.multicast_counter: np.uint16 = 1
-        # dict to store the multicast counters for each peer
-        self.multicast_dict: dict[uuid.UUID, np.uint16] = {}
-        # dict to store the missed counters to later accept them
-        self.missed_multicasts: dict[uuid.UUID, list[np.uint16]] = {}
         self.heartbeat_mutex = Lock()
+        self.file_mutex = Lock()
         # mutex to deal with threading issues when accepting and identifying new peers
         self.mutex = Lock()
 
@@ -60,6 +62,76 @@ class Node:
         self.discovery_thread = Thread(target=self.discovery)
         self.discovery_thread.start()
 
+    def register_file(self, file_path: str):
+        try:
+            file_hash = hashlib.sha1()
+            with open(file_path, "rb") as f:
+                while True:
+                    segment = f.read(file_hash.block_size)
+                    if not segment:
+                        break
+                    file_hash.update(segment)
+            file_hash = file_hash.digest()
+            if file_hash in self.files:
+                if self.uuid in self.files[file_hash].providers:
+                    print("[i] You are already providing that file.")
+                    return
+                file = self.files[file_hash]
+                file.providers.append(self.uuid)
+                file.file_path = file_path
+                self.message_peers(
+                    Message(Message.bytecodes["register"], self.uuid, 28+len(file.name),
+                            file.hash + file.size.tobytes() + str.encode(file.name)))
+                return
+            file_name = file_path.split("/")[-1]
+            file = File(file_hash, file_name, np.uint64(os.path.getsize(
+                file_path)), [self.uuid, ], file_path)
+            self.file_mutex.acquire()
+            self.files[file.hash] = file
+            self.file_mutex.release()
+            self.message_peers(
+                Message(Message.bytecodes["register"], self.uuid, 28+len(file.name),
+                        file.hash + file.size.tobytes() + str.encode(file.name)))
+            return
+        except Exception as e:
+            print(f"[!] Error when registering file:")
+            traceback.print_exc()
+
+    def deregister_file(self, file: File):
+        try:
+            if not file.hash in self.files:
+                print("[!] No file with specified hash was found!")
+            self.files[file.hash].providers.remove(self.uuid)
+            if not self.files[file.hash].providers:
+                self.file_mutex.acquire()
+                del self.files[file.hash]
+                self.file_mutex.release()
+            self.message_peers(
+                Message(Message.bytecodes["deregister"], self.uuid, 20, file.hash))
+        except Exception as e:
+            print(f"[!] Error while unlisting file: {e}")
+            traceback.print_exc()
+
+    # returns files for testing purposes, clean this up later
+    def list_files(self, provided_only: bool = False):
+        files = []
+        c = 0
+        print("*** Files **************")
+        self.file_mutex.acquire()
+        for _, file in self.files.items():
+            if self.uuid in file.providers:
+                files.append(file)
+                print(f"[{c}]{file}")
+                c += 1
+                continue
+            if not provided_only:
+                files.append(file)
+                print(f"[{c}]{file}")
+                c += 1
+        self.file_mutex.release()
+        print("************************")
+        return files
+
     def discovery(self):
         segments = self.sock.getsockname()[0].split(".")
         content = b""
@@ -91,13 +163,18 @@ class Node:
         print(f"[i] New connection with {addr}")
         # simply send message to all peers without forwarding to maintain consistent state (message is "self forwarding")
         Thread(target=self.message_peers, args=[msg, False]).start()
+        # send all files offered to newly connected peer
+        self.file_mutex.acquire()
+        for _, file in self.files.items():
+            if self.uuid in file.providers:
+                peer.send_message(
+                    Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name)))
+        self.file_mutex.release()
         self.add_peer(peer)
-        self.multicast_dict[peer.uuid] = 0
-        self.missed_multicasts[peer.uuid] = []
         # send current leader uuid to newly connected peer if exists, if not exists and own uuid is lowest, trigger election
         if not self.leader_uuid:
-            if all(self.uuid < peer.uuid for peer in self.peers):
-                self.start_election()
+            # if all(self.uuid < peer.uuid for peer in self.peers):
+            self.start_election()
         else:
             peer.send_message(
                 Message(Message.bytecodes["leader"], self.uuid, 16, self.leader_uuid.bytes))
@@ -105,15 +182,24 @@ class Node:
     def disconnect(self, connection: Connection):
         connection.close()
         print(f"[i] Disconnected peer {connection.uuid}")
-        del self.multicast_dict[connection.uuid]
-        del self.missed_multicasts[connection.uuid]
+        # remove all files of disconnected peer
+        self.file_mutex.acquire()
+        removeables = []
+        for _, file in self.files.items():
+            if connection.uuid in file.providers:
+                file.providers.remove(connection.uuid)
+                if not file.providers:
+                    removeables.append(file.hash)
+        for removeable in removeables:
+            del self.files[removeable]
+        self.file_mutex.release()
         self.heartbeat_mutex.acquire()
         self.peers.remove(connection)
         self.heartbeat_mutex.release()
         # we need to make sure all peers have the same list of peers before starting the election
         if connection.uuid == self.leader_uuid:
-            if all(self.uuid < peer.uuid for peer in self.peers):
-                self.start_election()
+            # if all(self.uuid < peer.uuid for peer in self.peers):
+            self.start_election()
 
     # notify peers and close all connections
     def leave(self):
@@ -195,27 +281,32 @@ class Node:
 
     def forward_multicast(self, msg: Message) -> bool:
         # Special case if a peer has disconnected but an old message forwarded
-        if not msg.sender_uuid in self.missed_multicasts or not msg.sender_uuid in self.multicast_dict:
+        origin: Connection = None
+        for peer in self.peers:
+            if peer.uuid == msg.sender_uuid:
+                origin = peer
+        if not origin:
+            print("[i] Message origin not found in peers!")
             return False
-        if msg.id in self.missed_multicasts[msg.sender_uuid]:
+        if msg.id in origin.missed_multicasts:
             # self.message_peers(msg, set_multicast_counter=False)
-            self.missed_multicasts[msg.sender_uuid].remove(msg.id)
+            origin.missed_multicasts.remove(msg.id)
             Thread(target=self.message_peers, args=[msg, False]).start()
             return True
-        if msg.id > self.multicast_dict[msg.sender_uuid]:
-            self.missed_multicasts[msg.sender_uuid].extend(
-                [np.uint16(i) for i in range(int(self.multicast_dict[msg.sender_uuid]+1), int(msg.id))])
-            self.multicast_dict[msg.sender_uuid] = msg.id
+        if msg.id > origin.multicast_counter:
+            origin.missed_multicasts.extend(
+                [np.uint16(i) for i in range(int(origin.multicast_counter+1), int(msg.id))])
+            origin.multicast_counter = msg.id
             Thread(target=self.message_peers, args=[msg, False]).start()
             # self.message_peers(msg, set_multicast_counter=False)
             return True
         # if msg id is much smaller than the counter for that peer, we assume an overflow has happened and act as if it was larger
-        if self.multicast_dict[msg.sender_uuid] - msg.id > (np.iinfo(np.uint16).max/2):
-            self.missed_multicasts[msg.sender_uuid].extend(
+        if origin.multicast_counter - msg.id > (np.iinfo(np.uint16).max/2):
+            origin.missed_multicasts.extend(
                 [np.uint16(i) for i in range(int(self.multicast_dict[msg.sender_uuid]+1), int(np.iinfo(np.uint16).max))])
-            self.missed_multicasts[msg.sender_uuid].extend(
+            origin.missed_multicasts.extend(
                 [np.uint16(i) for i in range(1, int(msg.id))])
-            self.multicast_dict[msg.sender_uuid] = msg.id
+            origin.multicast_counter = msg.id
             Thread(target=self.message_peers, args=[msg, False]).start()
             # self.message_peers(msg, set_multicast_counter=False)
             return True
@@ -253,8 +344,6 @@ class Node:
                     self.mutex.acquire(blocking=True)
                     # print(f"[i] Received identification from {msg.connection.addr}")
                     msg.connection.uuid = msg.sender_uuid
-                    self.multicast_dict[msg.connection.uuid] = 0
-                    self.missed_multicasts[msg.connection.uuid] = []
                     self.mutex.release()
                     continue
                 if msg.control_byte == msg.bytecodes["disconnect"]:
@@ -276,9 +365,43 @@ class Node:
                     print(
                         f"[i] New leader announced: <{msg.sender_uuid}:{msg.id}>{self.leader_uuid}")
                     continue
+                if msg.control_byte == msg.bytecodes["register"]:
+                    if len(msg.content) < 28:
+                        continue
+                    file_hash = msg.content[:20]
+                    file_size = np.frombuffer(
+                        msg.content[20:28], dtype=np.uint64)[0]
+                    file_name = msg.content[28:].decode()
+                    # check if file is already in file list
+                    if file_hash in self.files:
+                        if msg.sender_uuid in self.files[file_hash].providers:
+                            continue
+                        self.files[file_hash].providers.append(msg.sender_uuid)
+                        continue
+                    self.file_mutex.acquire()
+                    self.files[file_hash] = File(
+                        file_hash, file_name, np.uint64(file_size), [msg.sender_uuid, ])
+                    self.file_mutex.release()
+                    continue
+                if msg.control_byte == msg.bytecodes["deregister"]:
+                    if len(msg.content) < 20:
+                        continue
+                    file_hash = msg.content[:20]
+                    if not file_hash in self.files:
+                        continue
+                    if msg.sender_uuid in self.files[file_hash].providers:
+                        self.files[file_hash].providers.remove(msg.sender_uuid)
+                        if not self.files[file_hash].providers:
+                            self.file_mutex.acquire()
+                            del self.file[file_hash]
+                            self.file_mutex.release()
+                    continue
                 print(f"{msg}")
             except queue.Empty:
                 pass
+            except Exception as e:
+                print("[!] Something went wrong during message handling:")
+                traceback.print_exc()
         print("[i] Stopped message handler")
 
     def list_peers(self):
@@ -290,8 +413,6 @@ class Node:
             print(f"\t{peer.uuid}")
         print("************************")
 
-    # is it enough to just announce oneself as a leader if we have the highest uuid?
-    # We already have a list of connected peers with the highest uuid as a consistent state.
     def start_election(self):
         print("Starting election...")
         higher_nodes = [peer for peer in self.peers if peer.uuid > self.uuid]

@@ -19,6 +19,9 @@ class Connection():
         self.uuid = unique_id
         self.stop = False
 
+        self.multicast_counter: np.uint16 = 0
+        self.missed_multicasts: list[np.uint16] = []
+
         sock.setblocking(False)
 
         self.listener_thread = Thread(target=self.listen)
