@@ -37,5 +37,4 @@ While a node does not know of any other peers it will periodically send a broadc
 We use the Bully election algorithm. An election is started, when the leader disconnects or when a new node joins and no leader is currently elected.
 
 ## Files
-### Listing files
 A peer can at any time register an arbitrary file. On register all other peers are notified via multicast, each file can view a list of currently registered files and may requests a file. When requesting a file, the peer receiving the request will transmit the file in chunks of 2kb. The final message uses a different bytecode to mark the end of transmission. Finally the peer will compare the hash of the received file with the expected hash and prints a warning if they don't match. Once a file is fully transmitted, the receiver will automatically register that file and will act as a provider from now on.
