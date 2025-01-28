@@ -164,7 +164,7 @@ class Node:
         try:
             with open(file.file_path, "rb") as f:
                 while True:
-                    # currently sending 1024 bytes, might not be the best value :)
+                    # currently sending 2048 bytes, might not be the best value :)
                     data = f.read(2048)
                     if not data:
                         break
@@ -174,7 +174,7 @@ class Node:
                     connection.send_message(
                         Message(byte, self.uuid, 20+len(data), file.hash + data))
                     # delay is needed to stay responsive
-                    time.sleep(0.2)
+                    time.sleep(0.1)
             print(
                 f"[i] Finished sending file {file.hash} to {connection.uuid}.")
         except Exception as e:
@@ -201,6 +201,8 @@ class Node:
                 self.register_file("./test/" + self.files[file_hash].name)
                 del self.file_parts[file_hash]
             except queue.Empty:
+                # small sleep to avoid taking up to much processing power
+                time.sleep(0.1)
                 pass
             except Exception as e:
                 print("[!] Something went wrong during message handling:")
@@ -258,16 +260,17 @@ class Node:
         connection.close()
         print(f"[i] Disconnected peer {connection.uuid}")
         # remove all files of disconnected peer
-        self.file_mutex.acquire()
-        removeables = []
-        for _, file in self.files.items():
-            if connection.uuid in file.providers:
-                file.providers.remove(connection.uuid)
-                if not file.providers:
-                    removeables.append(file.hash)
-        for removeable in removeables:
-            del self.files[removeable]
-        self.file_mutex.release()
+        if connection.uuid != None:
+            self.file_mutex.acquire()
+            removeables = []
+            for _, file in self.files.items():
+                if connection.uuid in file.providers:
+                    file.providers.remove(connection.uuid)
+                    if not file.providers:
+                        removeables.append(file.hash)
+            for removeable in removeables:
+                del self.files[removeable]
+            self.file_mutex.release()
         if connection in self.peers:
             self.heartbeat_mutex.acquire()
             self.peers.remove(connection)
@@ -339,7 +342,7 @@ class Node:
     def check_heartbeat(self):
         t = time.time()
         while not self.stop:
-            print(f"[i] interval: {time.time()-t}")
+            # print(f"[i] interval: {time.time()-t}")
             t = time.time()
             removeable = []
             self.heartbeat_mutex.acquire()
@@ -432,6 +435,10 @@ class Node:
                 if msg.control_byte == msg.bytecodes["identify"]:
                     # mutex to avoid identifying peers before adding them to the peer list
                     self.mutex.acquire(blocking=True)
+                    if any(msg.sender_uuid == peer.uuid for peer in self.peers):
+                        # close connection and notify
+                        self.disconnect(msg.connection)
+                        continue
                     # print(f"[i] Received identification from {msg.connection.addr}")
                     msg.connection.uuid = msg.sender_uuid
                     self.mutex.release()
@@ -503,6 +510,8 @@ class Node:
                     continue
                 print(f"{msg}")
             except queue.Empty:
+                # trying out sleep to decrease delay in heartbeat loop
+                time.sleep(0.1)
                 pass
             except Exception as e:
                 print("[!] Something went wrong during message handling:")
