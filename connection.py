@@ -2,6 +2,7 @@ import socket
 import numpy as np
 from threading import Thread
 from queue import Queue
+import multiprocessing as mp
 import select
 import uuid
 import time
@@ -26,6 +27,8 @@ class Connection():
         sock.setblocking(False)
 
         self.listener_thread = Thread(target=self.listen)
+        # self.listener_thread = mp.Process(
+        #     target=self.listen)
         self.listener_thread.start()
 
     # Listen to messages
@@ -36,12 +39,11 @@ class Connection():
                 ready = select.select([self.sock], [], [], 0.5)
                 if not ready[0]:
                     continue
-                content, addr = self.sock.recvfrom(1024 * 8)
+                content = self.sock.recv(1024 * 8)
                 data += content
                 if (
-                    not data
-                    or len(data) < 23
-                    or (len(data) - 23) < int.from_bytes(data[19:23], byteorder="big")
+                    len(data) < 23 or (len(data) -
+                                       23) < int.from_bytes(data[19:23], byteorder="big")
                 ):
                     continue
                 msg = Message(
@@ -72,7 +74,7 @@ class Connection():
             print(f"[!] Error while sending message: {e.strerror}")
 
     def close(self):
-        self.stop = True
+        self.stop.value = True
         self.listener_thread.join()
         self.sock.close()
         # print(f"[i] Closed connection to {self.uuid if self.uuid else self.addr}.")

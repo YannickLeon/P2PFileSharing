@@ -10,6 +10,7 @@ import hashlib
 import os
 import traceback
 import random
+import multiprocessing as mp
 
 from message import Message
 from connection import Connection
@@ -164,16 +165,16 @@ class Node:
             with open(file.file_path, "rb") as f:
                 while True:
                     # currently sending 1024 bytes, might not be the best value :)
-                    data = f.read(1024)
+                    data = f.read(2048)
                     if not data:
                         break
                     byte = Message.bytecodes["data"]
-                    if len(data) < 1024:
+                    if len(data) < 2048:
                         byte = Message.bytecodes["dataend"]
                     connection.send_message(
                         Message(byte, self.uuid, 20+len(data), file.hash + data))
                     # delay is needed to stay responsive
-                    time.sleep(0.1)
+                    time.sleep(0.2)
             print(
                 f"[i] Finished sending file {file.hash} to {connection.uuid}.")
         except Exception as e:
@@ -353,7 +354,8 @@ class Node:
                     Thread(target=self.message_peers,
                            args=[msg, True]).start()
                     self.disconnect(peer)
-            interval = HEARTBEAT_INTERVAL > time.time() - t
+            interval = HEARTBEAT_INTERVAL - (time.time() - t)
+            print(f"[i] interval: {interval}")
             if interval > 0:
                 time.sleep(interval)
 
