@@ -13,6 +13,7 @@ A local peer-to-peer file sharing application developed as a student project for
 |identify|1|0|-|
 |disconnect|2|16|uuid|
 |heartbeat|3|0|-|
+|abort|4|0|-|
 |register|10|28+?|hash(20byte)+size(uint64)+name(?)|
 |de-register|11|20|hash(20byte)|
 |request|12|28|received(uint64)+hash(20byte)|
