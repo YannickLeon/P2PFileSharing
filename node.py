@@ -176,7 +176,7 @@ class Node:
                     # delay is needed to stay responsive
                     time.sleep(0.1)
             print(
-                f"[i] Finished sending file {file.hash} to {connection.uuid}.")
+                f"[i] Finished sending file {file.name} to {connection.uuid}.")
         except Exception as e:
             print(f"[!] Error while sending file: {e}")
             traceback.print_exc()
@@ -435,13 +435,24 @@ class Node:
                 if msg.control_byte == msg.bytecodes["identify"]:
                     # mutex to avoid identifying peers before adding them to the peer list
                     self.mutex.acquire(blocking=True)
-                    if any(msg.sender_uuid == peer.uuid for peer in self.peers):
+                    peer = None
+                    for p in self.peers:
+                        if p.uuid == msg.sender_uuid:
+                            peer = p
+                            break
+                    # duplicates are possible if two peers try to both open a connection, this happens if a broadcast arrives simultaneously
+                    # Solution: peer with lower uuid aborts the incoming connection
+                    if peer != None and peer.uuid < self.uuid:
                         # close connection and notify
+                        peer.send_message(
+                            Message(msg.bytecodes["abort"], self.uuid))
                         self.disconnect(msg.connection)
-                        continue
                     # print(f"[i] Received identification from {msg.connection.addr}")
                     msg.connection.uuid = msg.sender_uuid
                     self.mutex.release()
+                    continue
+                if msg.control_byte == msg.bytecodes["abort"]:
+                    self.disconnect(msg.connection)
                     continue
                 if msg.control_byte == msg.bytecodes["disconnect"]:
                     peer_id = uuid.UUID(bytes=msg.content)
