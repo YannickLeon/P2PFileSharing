@@ -337,7 +337,9 @@ class Node:
         print("[i] Stopped connection thread.")
 
     def check_heartbeat(self):
+        t = time.time()
         while not self.stop:
+            print(f"[i] interval: {time.time()-t}")
             t = time.time()
             removeable = []
             self.heartbeat_mutex.acquire()
@@ -355,7 +357,6 @@ class Node:
                            args=[msg, True]).start()
                     self.disconnect(peer)
             interval = HEARTBEAT_INTERVAL - (time.time() - t)
-            print(f"[i] interval: {interval}")
             if interval > 0:
                 time.sleep(interval)
 

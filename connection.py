@@ -74,7 +74,7 @@ class Connection():
             print(f"[!] Error while sending message: {e.strerror}")
 
     def close(self):
-        self.stop.value = True
+        self.stop = True
         self.listener_thread.join()
         self.sock.close()
         # print(f"[i] Closed connection to {self.uuid if self.uuid else self.addr}.")
