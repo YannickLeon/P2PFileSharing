@@ -40,18 +40,23 @@ class Connection():
                     continue
                 content = self.sock.recv(1024 * 8)
                 data += content
-                if (
-                    len(data) < 23 or (len(data) -
-                                       23) < int.from_bytes(data[19:23], byteorder="big")
-                ):
+                if (len(data) < 25):
+                    continue
+                offset = int(np.frombuffer(data[1:3], dtype=np.uint16)[0])
+                if len(data) < 25 + offset:
+                    continue
+                if len(data) < 25 + offset + int.from_bytes(data[21 + offset:25 + offset], byteorder="big"):
                     continue
                 msg = Message(
                     control_byte=np.byte(data[0]),
-                    sender_uuid=uuid.UUID(bytes=data[1:17]),
-                    id=np.frombuffer(data[17:19], dtype=np.uint16),
-                    length=int.from_bytes(data[19:23], byteorder="big"),
-                    content=data[23: 23 +
-                                 int.from_bytes(data[19:23], byteorder="big")],
+                    vector=data[3:3 + offset],
+                    sender_uuid=uuid.UUID(bytes=data[3 + offset:19 + offset]),
+                    id=np.frombuffer(
+                        data[19 + offset:21 + offset], dtype=np.uint16),
+                    length=int.from_bytes(
+                        data[21 + offset:25 + offset], byteorder="big"),
+                    content=data[25 + offset: 25 + offset +
+                                 int.from_bytes(data[21 + offset:25 + offset], byteorder="big")],
                     connection=self,
                 )
                 if msg.control_byte == msg.bytecodes["heartbeat"]:
@@ -60,7 +65,8 @@ class Connection():
                     self.file_q.put(msg)
                 else:
                     self.q.put(msg)
-                data = data[23 + int.from_bytes(data[19:23], byteorder="big"):]
+                data = data[25 + offset +
+                            int.from_bytes(data[21 + offset:25 + offset], byteorder="big"):]
             except socket.error:
                 print("[!] Connection error while receiving data.")
                 break

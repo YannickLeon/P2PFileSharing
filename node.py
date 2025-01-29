@@ -32,6 +32,7 @@ class Node:
         self.stop = False
         self.uuid = uuid.uuid4()
         self.leader_uuid = None
+        print(f"[i] Set own uuid: {self.uuid}")
         # 0 is reserved to identify non-multicast messages (don't need to be propagated)
         self.multicast_counter: np.uint16 = 1
         self.heartbeat_mutex = Lock()
@@ -40,7 +41,7 @@ class Node:
         self.mutex = Lock()
 
         # Initialize vector clocks for this node
-        self.vector_clock = {self.uuid: 0}
+        self.vector_clock: dict[uuid.UUID, int] = {self.uuid: 0}
         self.clock_mutex = Lock()
 
         # socket to listen for incoming connections
@@ -169,11 +170,11 @@ class Node:
             with open(file.file_path, "rb") as f:
                 while True:
                     # currently sending 2048 bytes, might not be the best value :)
-                    data = f.read(2048)
+                    data = f.read(2048*10)
                     if not data:
                         break
                     byte = Message.bytecodes["data"]
-                    if len(data) < 2048:
+                    if len(data) < 2048*10:
                         byte = Message.bytecodes["dataend"]
                     connection.send_message(
                         Message(byte, self.uuid, 20+len(data), file.hash + data))
@@ -265,20 +266,21 @@ class Node:
         print(f"[i] Disconnected peer {connection.uuid}")
         # remove all files of disconnected peer
         if connection.uuid != None:
-            self.file_mutex.acquire()
-            removeables = []
-            for _, file in self.files.items():
-                if connection.uuid in file.providers:
-                    file.providers.remove(connection.uuid)
-                    if not file.providers:
-                        removeables.append(file.hash)
-            for removeable in removeables:
-                del self.files[removeable]
-            self.file_mutex.release()
+            with self.file_mutex:
+                removeables = []
+                for _, file in self.files.items():
+                    if connection.uuid in file.providers:
+                        file.providers.remove(connection.uuid)
+                        if not file.providers:
+                            removeables.append(file.hash)
+                for removeable in removeables:
+                    del self.files[removeable]
+            if connection.uuid in self.vector_clock:
+                with self.clock_mutex:
+                    del self.vector_clock[connection.uuid]
         if connection in self.peers:
-            self.heartbeat_mutex.acquire()
-            self.peers.remove(connection)
-            self.heartbeat_mutex.release()
+            with self.heartbeat_mutex:
+                self.peers.remove(connection)
         # we need to make sure all peers have the same list of peers before starting the election
         if connection.uuid == self.leader_uuid:
             # if all(self.uuid < peer.uuid for peer in self.peers):
@@ -302,7 +304,7 @@ class Node:
 
     def send_broadcast(self, msg: Message):
         self.increment_clock()
-        msg.vector_content += Message.vector_clock_to_bytes(self.vector_clock)
+        msg.set_vector(Message.vector_clock_to_bytes(self.vector_clock))
         self.bc_sock.sendto(msg.to_bytes(), ('<broadcast>', 9000))
 
     # send message to all peers
@@ -335,12 +337,11 @@ class Node:
                 print(f"[i] New connection by {addr}")
                 self.mutex.release()
                 # notify peer of provided files
-                self.file_mutex.acquire()
-                for _, file in self.files.items():
-                    if self.uuid in file.providers:
-                        peer.send_message(
-                            Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name)))
-                self.file_mutex.release()
+                with self.file_mutex:
+                    for _, file in self.files.items():
+                        if self.uuid in file.providers:
+                            peer.send_message(
+                                Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name)))
             except:
                 continue
         print("[i] Stopped connection thread.")
@@ -421,9 +422,10 @@ class Node:
                     continue
 
                 # Extract vector clock from the message content
-
-                incoming_clock = Message.bytes_to_vector_clock(msg.vector_content)
+                incoming_clock = Message.bytes_to_vector_clock(
+                    msg.vector)
                 self.merge_clock(incoming_clock)
+                # print(self.vector_clock)
 
                 if msg.id != 0:  # check if message is a multicast
                     # if the return value is False, we can ignore the message and continue as we already processed it
@@ -584,9 +586,9 @@ class Node:
                 if node not in self.vector_clock:
                     self.vector_clock[node] = timestamp
                 else:
-                    self.vector_clock[node] = max(self.vector_clock[node], timestamp)
+                    self.vector_clock[node] = max(
+                        self.vector_clock[node], timestamp)
             self.vector_clock[self.uuid] += 1
-        
 
     def print_vector_clock(self):
         with self.clock_mutex:
