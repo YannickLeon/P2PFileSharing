@@ -38,3 +38,5 @@ We use the Bully election algorithm. An election is started, when the leader dis
 
 ## Files
 A peer can at any time register an arbitrary file. On register all other peers are notified via multicast, each file can view a list of currently registered files and may requests a file. When requesting a file, the peer receiving the request will transmit the file in chunks of 2kb. The final message uses a different bytecode to mark the end of transmission. Finally the peer will compare the hash of the received file with the expected hash and prints a warning if they don't match. Once a file is fully transmitted, the receiver will automatically register that file and will act as a provider from now on.
+
+## Load Balancing
