@@ -10,7 +10,6 @@ import hashlib
 import os
 import traceback
 import random
-import multiprocessing as mp
 
 from message import Message
 from connection import Connection
@@ -28,6 +27,7 @@ class Node:
         self.q: Queue = Queue()
         # seperate queue for data messages to stay responsive during data transmission
         self.file_q = Queue()
+        self.file_request_q = Queue()
         self.file_parts: dict[bytes, FilePart] = {}
         self.stop = False
         self.uuid = uuid.uuid4()

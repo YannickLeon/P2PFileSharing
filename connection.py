@@ -2,7 +2,6 @@ import socket
 import numpy as np
 from threading import Thread
 from queue import Queue
-import multiprocessing as mp
 import select
 import uuid
 import time
