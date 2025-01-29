@@ -33,6 +33,10 @@ class Node:
         # mutex to deal with threading issues when accepting and identifying new peers
         self.mutex = Lock()
 
+        # Initialize vector clocks for this node
+        self.vector_clock = {self.uuid: 0}
+        self.clock_mutex = Lock()
+
         # socket to listen for incoming connections
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setblocking(0)
@@ -217,6 +221,8 @@ class Node:
         self.sock.close()
 
     def send_broadcast(self, msg: Message):
+        self.increment_clock()
+        msg.vector_content += Message.vector_clock_to_bytes(self.vector_clock)
         self.bc_sock.sendto(msg.to_bytes(), ('<broadcast>', 9000))
 
     # send message to all peers
@@ -320,6 +326,12 @@ class Node:
                 msg: Message = self.q.get(block=False)
                 if msg.sender_uuid == self.uuid:  # ignore own messages
                     continue
+
+                # Extract vector clock from the message content
+
+                incoming_clock = Message.bytes_to_vector_clock(msg.vector_content)
+                self.merge_clock(incoming_clock)
+
                 if msg.id != 0:  # check if message is a multicast
                     # if the return value is False, we can ignore the message and continue as we already processed it
                     if not self.forward_multicast(msg):
@@ -355,7 +367,7 @@ class Node:
                     continue
                 if msg.control_byte == msg.bytecodes["election"]:
                     if msg.sender_uuid < self.uuid:
-                        # progate the election message further
+                        # propagate the election message further
                         self.start_election()
                     continue
                 if msg.control_byte == msg.bytecodes["leader"]:
@@ -432,3 +444,26 @@ class Node:
         leader_msg = Message(
             Message.bytecodes["leader"], self.uuid, 16, leader_uuid.bytes)
         self.message_peers(leader_msg)
+
+    def increment_clock(self):
+        # increment this node's clock
+        with self.clock_mutex:
+            self.vector_clock[self.uuid] += 1
+
+    def merge_clock(self, incoming_clock: dict):
+        # merge incoming vector clock with the nodes's current clock
+        with self.clock_mutex:
+            for node, timestamp in incoming_clock.items():
+                if node not in self.vector_clock:
+                    self.vector_clock[node] = timestamp
+                else:
+                    self.vector_clock[node] = max(self.vector_clock[node], timestamp)
+            self.vector_clock[self.uuid] += 1
+        
+
+    def print_vector_clock(self):
+        with self.clock_mutex:
+            print("[Vector Clock]")
+            for node, timestamp in self.vector_clock.items():
+                print(f"Node {node}: {timestamp}")
+            print("-" * 20)

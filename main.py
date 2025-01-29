@@ -66,6 +66,9 @@ def main():
         if user_input[0] == "elec":
             node.start_election()
             continue
+        if user_input[0] == "clock":
+            node.print_vector_clock()
+            continue
         print("No such command.")
 
     print("Node Stopped!")
