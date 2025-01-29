@@ -3,9 +3,9 @@ A local peer-to-peer file sharing application developed as a student project for
 
 ## Messages
 ### Structure
-|control-byte|uuid|multicast-id|length|content|
-|------------|----|--|------|-------|
-|1 byte|16 byte|2 byte|4 byte|?|
+|control-byte|vector-length|vector|uuid|multicast-id|length|content|
+|------------|-------------|------|----|--|------|-------|
+|1 byte|2 byte|?|16 byte|2 byte|4 byte|?|
 ### Types
 |name|control-byte|length|content|
 |----|------------|------|-------|
