@@ -435,6 +435,7 @@ class Node:
                 if msg.control_byte == msg.bytecodes["identify"]:
                     # mutex to avoid identifying peers before adding them to the peer list
                     self.mutex.acquire(blocking=True)
+                    # check if duplicate exists
                     peer = None
                     for p in self.peers:
                         if p.uuid == msg.sender_uuid:
