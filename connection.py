@@ -10,11 +10,12 @@ from message import Message
 
 
 class Connection():
-    def __init__(self, mode: str, addr: tuple[str, int], sock: socket.socket, q: Queue, unique_id: uuid.UUID = None):
+    def __init__(self, mode: str, addr: tuple[str, int], sock: socket.socket, q: Queue, file_q: Queue, unique_id: uuid.UUID = None):
         self.mode = mode
         self.addr = addr
         self.sock = sock
         self.q = q
+        self.file_q = file_q
         self.heartbeat = time.time()
         self.uuid = unique_id
         self.stop = False
@@ -25,6 +26,8 @@ class Connection():
         sock.setblocking(False)
 
         self.listener_thread = Thread(target=self.listen)
+        # self.listener_thread = mp.Process(
+        #     target=self.listen)
         self.listener_thread.start()
 
     # Listen to messages
@@ -35,12 +38,11 @@ class Connection():
                 ready = select.select([self.sock], [], [], 0.5)
                 if not ready[0]:
                     continue
-                content, addr = self.sock.recvfrom(1024 * 8)
+                content = self.sock.recv(1024 * 8)
                 data += content
                 if (
-                    not data
-                    or len(data) < 23
-                    or (len(data) - 23) < int.from_bytes(data[19:23], byteorder="big")
+                    len(data) < 23 or (len(data) -
+                                       23) < int.from_bytes(data[19:23], byteorder="big")
                 ):
                     continue
                 msg = Message(
@@ -54,7 +56,8 @@ class Connection():
                 )
                 if msg.control_byte == msg.bytecodes["heartbeat"]:
                     self.heartbeat = time.time()
-                    # print(f"[i] Received heartbeat: {msg.sender_uuid}")
+                elif msg.control_byte == msg.bytecodes["data"] or msg.control_byte == msg.bytecodes["dataend"]:
+                    self.file_q.put(msg)
                 else:
                     self.q.put(msg)
                 data = data[23 + int.from_bytes(data[19:23], byteorder="big"):]

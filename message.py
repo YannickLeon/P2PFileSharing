@@ -5,15 +5,19 @@ import uuid
 
 class Message:
     bytecodes = {
-        "init": 0,
-        "identify": 1,
-        "disconnect": 2,
+        "init": 0,          # used for discovery
+        "identify": 1,      # transmit uuid after connecting
+        "disconnect": 2,    # disconnect peer with uuid
         "heartbeat": 3,
-        "register": 10,
-        "deregister": 11,
-        "election": 20,
+        "abort": 4,         # close duplicate socket
+        "register": 10,     # register a file
+        "deregister": 11,   # de-register a file
+        "request": 12,      # request a file
+        "data": 13,         # file data
+        "dataend": 14,      # final data package
+        "election": 20,     # trigger election
         "alive": 21,
-        "leader": 22,
+        "leader": 22,       # announce leader by uuid
     }
 
     # Maybe change sender to be a reference to the connection object and add an addr field for broadcasts.
