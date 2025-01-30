@@ -43,6 +43,9 @@ def main():
         if user_input[0] == "lf":
             node.list_files()
             continue
+        if user_input[0] == "ld":
+            node.list_file_parts()
+            continue
         if user_input[0] == "df" or user_input[0] == "gf":
             files = node.list_files(user_input[0] == "df")
             try:

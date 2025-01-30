@@ -19,6 +19,7 @@ class Connection():
         self.heartbeat = time.time()
         self.uuid = unique_id
         self.stop = False
+        self.busy_timer = 0
 
         self.multicast_counter: np.uint16 = 0
         self.missed_multicasts: list[np.uint16] = []

@@ -18,25 +18,35 @@ from file_part import FilePart
 
 BC_ADDR = ("0.0.0.0", 9000)
 HEARTBEAT_INTERVAL = 0.4
+CHUNK_SIZE = 20480
 
 
 class Node:
     def __init__(self, ip: str, port: int = 0):
         self.peers: list[Connection] = []
         self.files: dict[bytes, File] = {}
+        self.peer_dict: dict[uuid.UUID, Connection] = {}
         self.q: Queue = Queue()
         # seperate queue for data messages to stay responsive during data transmission
-        self.file_q = Queue()
-        self.file_request_q = Queue()
+        self.file_q: Queue = Queue()
+        self.file_request_q: Queue = Queue()
         self.file_parts: dict[bytes, FilePart] = {}
+
+        # requests awaiting leader election
+        self.open_requests: list[Message] = []
+
+        self.busy_timer = 0
         self.stop = False
         self.uuid = uuid.uuid4()
-        self.leader_uuid = None
         print(f"[i] Set own uuid: {self.uuid}")
+        self.leader_uuid = None
         # 0 is reserved to identify non-multicast messages (don't need to be propagated)
         self.multicast_counter: np.uint16 = 1
         self.heartbeat_mutex = Lock()
         self.file_mutex = Lock()
+        self.file_part_mutex = Lock()
+        self.sending_mutex = Lock()
+        self.peer_mutex = Lock()
         # mutex to deal with threading issues when accepting and identifying new peers
         self.mutex = Lock()
 
@@ -69,6 +79,8 @@ class Node:
         self.message_thread.start()
         self.file_thread = Thread(target=self.file_handler)
         self.file_thread.start()
+        self.file_request_thread = Thread(target=self.file_request_handler)
+        self.file_request_thread.start()
         self.heartbeat_checker_thread = Thread(target=self.check_heartbeat)
         self.heartbeat_checker_thread.start()
         self.heartbeat_thread = Thread(target=self.send_heartbeat)
@@ -150,14 +162,24 @@ class Node:
         try:
             if not file.hash in self.files:
                 print("[!] No file with specified hash was found!")
-            # pick a random provider (temporary solution), decision will later be made by leader
-            provider = self.files[file.hash].providers[random.randrange(
-                0, len(self.files[file.hash].providers))]
+                return
+            if self.uuid in file.providers:
+                print("[i] You already have this file.")
+                return
+            # if this is the leader simply perform load balancing
+            if self.uuid == self.leader_uuid:
+                provider_uuid = self.select_provider(file.hash)
+                self.peer_dict[provider_uuid].send_message(Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(0).tobytes() + file.hash))
+                return
+            # send message to leader, to allow for load balancing
             for peer in self.peers:
-                if peer.uuid == provider:
+                if peer.uuid == self.leader_uuid:
                     peer.send_message(
                         Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(0).tobytes() + file.hash))
                     return
+            # if no leader was found append to open requests
+            self.open_requests.append(Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(0).tobytes() + file.hash))
+            return
         except Exception as e:
             print(f"[!] Error while unlisting file: {e}")
             traceback.print_exc()
@@ -167,24 +189,47 @@ class Node:
         print(
             f"[i] Started sending file {file.file_path} to {connection.uuid}.")
         try:
-            with open(file.file_path, "rb") as f:
-                while True:
-                    # currently sending 2048 bytes, might not be the best value :)
-                    data = f.read(2048*10)
-                    if not data:
-                        break
-                    byte = Message.bytecodes["data"]
-                    if len(data) < 2048*10:
-                        byte = Message.bytecodes["dataend"]
-                    connection.send_message(
-                        Message(byte, self.uuid, 20+len(data), file.hash + data))
-                    # delay is needed to stay responsive
-                    time.sleep(0.1)
-            print(
-                f"[i] Finished sending file {file.name} to {connection.uuid}.")
+            with self.sending_mutex:
+                with open(file.file_path, "rb") as f:
+                    f.seek(bytes_received)
+                    while True:
+                        # currently sending 2048 bytes, might not be the best value :)
+                        data = f.read(CHUNK_SIZE)
+                        f.peek()
+                        if not data:
+                            break
+                        byte = Message.bytecodes["data"]
+                        if f.tell() >= file.size:
+                            byte = Message.bytecodes["dataend"]
+                        connection.send_message(
+                            Message(byte, self.uuid, 20+len(data), file.hash + data))
+                        # delay is needed to stay responsive
+                        time.sleep(0.1)
+                print(
+                    f"[i] Finished sending file {file.name} to {connection.uuid}.")
         except Exception as e:
             print(f"[!] Error while sending file: {e}")
             traceback.print_exc()
+
+    def file_request_handler(self):
+        while not self.stop:
+            try:
+                with self.sending_mutex:
+                    thread: Thread = self.file_request_q.get(block=False)
+                    thread.start()
+            except queue.Empty:
+                time.sleep(1)
+                pass
+            except Exception as e:
+                print("[!] Something went wrong file request handling:")
+                traceback.print_exc()
+
+    def list_file_parts(self):
+        print("*** Downloads ***********")
+        with self.file_part_mutex:
+            for _, file in self.file_parts.items():
+                print(f"\t{file}")
+        print("************************")
 
     def file_handler(self):
         while not self.stop:
@@ -193,10 +238,11 @@ class Node:
                 file_hash = msg.content[:20]
                 data = msg.content[20:]
                 if not file_hash in self.file_parts:
-                    self.file_parts[file_hash] = FilePart(
-                        self.files[file_hash].name, file_hash, data, msg.sender_uuid)
+                    with self.file_part_mutex:
+                        self.file_parts[file_hash] = FilePart(
+                            self.files[file_hash].name, file_hash, self.files[file_hash].size, data)
                 else:
-                    self.file_parts[file_hash].data += data
+                    self.file_parts[file_hash].append(data)
                 if not msg.control_byte == msg.bytecodes["dataend"]:
                     continue
                 if not hashlib.sha1(self.file_parts[file_hash].data).digest() == self.file_parts[file_hash].hash:
@@ -204,7 +250,8 @@ class Node:
                         f"[w] Received file {self.file_parts[file_hash].name} is not matching the hash!")
                 self.file_parts[file_hash].save()
                 self.register_file("./test/" + self.files[file_hash].name)
-                del self.file_parts[file_hash]
+                with self.file_part_mutex:
+                    del self.file_parts[file_hash]
             except queue.Empty:
                 # small sleep to avoid taking up to much processing power
                 time.sleep(0.1)
@@ -241,6 +288,7 @@ class Node:
         sock.connect(addr)
         peer = Connection("outgoing", addr, sock, self.q,
                           self.file_q, msg.sender_uuid)
+        self.peer_dict[msg.sender_uuid] = peer
         peer.send_message(Message(Message.bytecodes["identify"], self.uuid))
         print(f"[i] New connection with {addr}")
         # simply send message to all peers without forwarding to maintain consistent state (message is "self forwarding")
@@ -264,20 +312,40 @@ class Node:
     def disconnect(self, connection: Connection):
         connection.close()
         print(f"[i] Disconnected peer {connection.uuid}")
-        # remove all files of disconnected peer
+        # remove all files of disconnected peer and adjust downloads
         if connection.uuid != None:
             with self.file_mutex:
+                file_hashes = []
                 removeables = []
                 for _, file in self.files.items():
                     if connection.uuid in file.providers:
                         file.providers.remove(connection.uuid)
                         if not file.providers:
                             removeables.append(file.hash)
+                            continue
+                        # remember hash if there are other providers
+                        file_hashes.append(file.hash)
                 for removeable in removeables:
                     del self.files[removeable]
+                    # cancel file downloads for files without providers
+                    if removeable in self.file_parts:
+                        print(f"[i] No more providers for {self.file_parts[removeable].name}, aborting download.")
+                        with self.file_part_mutex:
+                            del self.file_parts[removeable]
+                for file_hash in file_hashes:
+                    if not file_hash in self.file_parts:
+                        continue
+                    print(f"[i] Getting new provider for {self.file_parts[file_hash].name}.")
+                    file_request = Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(len(self.file_parts[file_hash].data)).tobytes() + file.hash)
+                    if connection.uuid != self.leader_uuid:
+                        self.peer_dict[self.leader_uuid].send_message(file_request)
+                    else:
+                        self.open_requests.append(file_request)
             if connection.uuid in self.vector_clock:
                 with self.clock_mutex:
                     del self.vector_clock[connection.uuid]
+            if connection.uuid in self.peer_dict:
+                del self.peer_dict[connection.uuid]
         if connection in self.peers:
             with self.heartbeat_mutex:
                 self.peers.remove(connection)
@@ -292,6 +360,7 @@ class Node:
         self.stop = True
         self.message_thread.join()
         self.file_thread.join()
+        self.file_request_thread.join()
         self.connection_thread.join()
         self.heartbeat_checker_thread.join()
         self.heartbeat_thread.join()
@@ -382,9 +451,9 @@ class Node:
     def forward_multicast(self, msg: Message) -> bool:
         # Special case if a peer has disconnected but an old message forwarded
         origin: Connection = None
-        for peer in self.peers:
-            if peer.uuid == msg.sender_uuid:
-                origin = peer
+        with self.peer_mutex:
+            if msg.sender_uuid in self.peer_dict:
+                origin = self.peer_dict[msg.sender_uuid]
         if not origin:
             print("[i] Message origin not found in peers!")
             return False
@@ -464,6 +533,7 @@ class Node:
                         self.disconnect(msg.connection)
                     # print(f"[i] Received identification from {msg.connection.addr}")
                     msg.connection.uuid = msg.sender_uuid
+                    self.peer_dict[msg.sender_uuid] = msg.connection
                     self.mutex.release()
                     continue
                 if msg.control_byte == msg.bytecodes["abort"]:
@@ -471,10 +541,9 @@ class Node:
                     continue
                 if msg.control_byte == msg.bytecodes["disconnect"]:
                     peer_id = uuid.UUID(bytes=msg.content)
-                    for peer in self.peers:
-                        if peer.uuid == peer_id:
-                            self.disconnect(peer)
-                            break
+                    # I hope this is threadsafe
+                    if peer_id in self.peer_dict:
+                        self.disconnect(self.peer_dict[peer_id])
                     continue
                 if msg.control_byte == msg.bytecodes["election"]:
                     if msg.sender_uuid < self.uuid:
@@ -485,6 +554,10 @@ class Node:
                     if len(msg.content) < 16:
                         continue
                     self.leader_uuid = uuid.UUID(bytes=msg.content)
+                    # send open requests waiting for leader, no extra thread should be required as leader election happens almost immediately after dc
+                    for request in self.open_requests:
+                        self.peer_dict[self.leader_uuid].send_message(request)
+                        time.sleep(0.05)
                     print(
                         f"[i] New leader announced: <{msg.sender_uuid}:{msg.id}>{self.leader_uuid}")
                     continue
@@ -527,12 +600,16 @@ class Node:
                     file_hash = msg.content[8:28]
                     if not file_hash in self.files:
                         continue
+                    # load balancing if leader
+                    if self.uuid == self.leader_uuid:
+                        provider_uuid = self.select_provider(file_hash)
+                        if provider_uuid != self.uuid:
+                            print("[i] Forwarded a file request to provider")
+                            self.peer_dict[provider_uuid].send_message(msg)
+                            continue
                     # create a thread sending file to peer
-                    for peer in self.peers:
-                        if peer.uuid == msg.sender_uuid:
-                            Thread(target=self.send_file, args=[
-                                   peer, self.files[file_hash], bytes_received]).start()
-                            break
+                    self.file_request_q.put(Thread(target=self.send_file, args=[
+                                            self.peer_dict[msg.sender_uuid], self.files[file_hash], bytes_received]))
                     continue
                 print(f"{msg}")
             except queue.Empty:
@@ -543,6 +620,22 @@ class Node:
                 print("[!] Something went wrong during message handling:")
                 traceback.print_exc()
         print("[i] Stopped message handler")
+
+    # function used for load balancing
+    def select_provider(self, file_hash: bytes) -> uuid.UUID:
+        provider = None
+        for uuid in self.files[file_hash].providers:
+            if uuid != self.uuid and (provider == None or self.peer_dict[uuid].busy_timer < provider.busy_timer):
+                provider = self.peer_dict[uuid]
+        # check for leader as file provider
+        if self.uuid in self.files[file_hash].providers and (provider == None or self.busy_timer < provider.busy_timer):
+            provider = self
+        # set provider busy_timer depending on file size
+        if provider.busy_timer < time.time():
+            provider.busy_timer = time.time() + self.files[file_hash].size / (CHUNK_SIZE*10)
+        else:
+            provider.busy_timer += self.files[file_hash].size / (CHUNK_SIZE*10)
+        return provider.uuid
 
     def list_peers(self):
         print("*** Peers **************")
