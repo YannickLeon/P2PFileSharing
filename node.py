@@ -9,7 +9,6 @@ import time
 import hashlib
 import os
 import traceback
-import random
 
 from message import Message
 from connection import Connection
@@ -41,7 +40,8 @@ class Node:
         print(f"[i] Set own uuid: {self.uuid}")
         self.leader_uuid = None
         # 0 is reserved to identify non-multicast messages (don't need to be propagated)
-        self.multicast_counter: np.uint16 = 1
+        self.multicast_counter: np.uint16 = np.uint16(1)
+        # mutexes for dict thread safety
         self.heartbeat_mutex = Lock()
         self.file_mutex = Lock()
         self.file_part_mutex = Lock()
@@ -51,7 +51,7 @@ class Node:
         self.mutex = Lock()
 
         # Initialize vector clocks for this node
-        self.vector_clock: dict[uuid.UUID, int] = {self.uuid: 0}
+        self.vector_clock: dict[uuid.UUID, np.uint16] = {self.uuid: np.uint16(0)}
         self.clock_mutex = Lock()
 
         # socket to listen for incoming connections
@@ -186,8 +186,7 @@ class Node:
 
     def send_file(self, connection: Connection, file: File, bytes_received: np.uint64):
         # implement message for when a while is not available anymore
-        print(
-            f"[i] Started sending file {file.file_path} to {connection.uuid}.")
+        print(f"[i] Started sending file {file.file_path} to {connection.uuid}.")
         try:
             with self.sending_mutex:
                 with open(file.file_path, "rb") as f:
@@ -225,7 +224,7 @@ class Node:
                 traceback.print_exc()
 
     def list_file_parts(self):
-        print("*** Downloads ***********")
+        print("*** Downloads **********")
         with self.file_part_mutex:
             for _, file in self.file_parts.items():
                 print(f"\t{file}")
@@ -394,9 +393,9 @@ class Node:
         if set_multicast_counter:
             msg.id = np.uint16(self.multicast_counter)
             if self.multicast_counter < np.iinfo(np.uint16).max:
-                self.multicast_counter += 1
+                self.multicast_counter += np.uint16(1)
             else:
-                self.multicast_counter = 1
+                self.multicast_counter = np.uint16(1)
         for peer in self.peers:
             peer.send_message(msg)
 
@@ -470,7 +469,6 @@ class Node:
             print("[i] Message origin not found in peers!")
             return False
         if msg.id in origin.missed_multicasts:
-            # self.message_peers(msg, set_multicast_counter=False)
             origin.missed_multicasts.remove(msg.id)
             Thread(target=self.message_peers, args=[msg, False]).start()
             return True
@@ -479,17 +477,15 @@ class Node:
                 [np.uint16(i) for i in range(int(origin.multicast_counter+1), int(msg.id))])
             origin.multicast_counter = msg.id
             Thread(target=self.message_peers, args=[msg, False]).start()
-            # self.message_peers(msg, set_multicast_counter=False)
             return True
         # if msg id is much smaller than the counter for that peer, we assume an overflow has happened and act as if it was larger
-        if origin.multicast_counter - msg.id > (np.iinfo(np.uint16).max/2):
+        if origin.multicast_counter - msg.id > (np.iinfo(np.uint16).max/2): 
             origin.missed_multicasts.extend(
                 [np.uint16(i) for i in range(int(self.multicast_dict[msg.sender_uuid]+1), int(np.iinfo(np.uint16).max))])
             origin.missed_multicasts.extend(
                 [np.uint16(i) for i in range(1, int(msg.id))])
             origin.multicast_counter = msg.id
             Thread(target=self.message_peers, args=[msg, False]).start()
-            # self.message_peers(msg, set_multicast_counter=False)
             return True
         return False
 
@@ -503,7 +499,7 @@ class Node:
                     continue
 
                 # Extract vector clock from the message content
-                incoming_clock = Message.bytes_to_vector_clock(
+                incoming_clock = Message.vector_clock_from_bytes(
                     msg.vector)
                 self.merge_clock(incoming_clock)
                 # print(self.vector_clock)
@@ -571,8 +567,7 @@ class Node:
                         self.peer_dict[self.leader_uuid].send_message(request)
                         time.sleep(0.05)
                     self.open_requests.clear()
-                    print(
-                        f"[i] New leader announced: <{msg.sender_uuid}:{msg.id}>{self.leader_uuid}")
+                    # print(f"[i] New leader announced: <{msg.sender_uuid}:{msg.id}>{self.leader_uuid}")
                     continue
                 if msg.control_byte == msg.bytecodes["register"]:
                     if len(msg.content) < 28:
@@ -683,7 +678,7 @@ class Node:
     def increment_clock(self):
         # increment this node's clock
         with self.clock_mutex:
-            self.vector_clock[self.uuid] += 1
+            self.vector_clock[self.uuid] += np.uint16(1)
 
     def merge_clock(self, incoming_clock: dict):
         # merge incoming vector clock with the nodes's current clock
@@ -694,7 +689,7 @@ class Node:
                 else:
                     self.vector_clock[node] = max(
                         self.vector_clock[node], timestamp)
-            self.vector_clock[self.uuid] += 1
+            self.vector_clock[self.uuid] += np.uint16(1)
 
     def print_vector_clock(self):
         with self.clock_mutex:

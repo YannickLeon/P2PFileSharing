@@ -50,29 +50,25 @@ class Message:
         self.vector_length = np.uint16(len(vector))
 
     @staticmethod
-    def vector_clock_to_bytes(vector_clock: dict) -> bytes:
+    def vector_clock_to_bytes(vector_clock: dict[uuid.UUID, np.uint16]) -> bytes:
         # Convert a vector clock dictionary into bytes.
         clock_bytes = b""
         for node_uuid, timestamp in vector_clock.items():
-            clock_bytes += node_uuid.bytes + \
-                timestamp.to_bytes(4, byteorder="big")
+            clock_bytes += node_uuid.bytes + timestamp.tobytes()
         return clock_bytes
 
     @staticmethod
-    def bytes_to_vector_clock(vector_content: bytes) -> dict:
+    def vector_clock_from_bytes(vector_content: bytes) -> dict:
         # Convert bytes back into a vector clock dictionary.
-        if len(vector_content) % 20 != 0:
-            raise ValueError(
-                "Invalid vector_content length; must be a multiple of 20.")
-
+        if len(vector_content) % 18 != 0:
+            raise ValueError("Invalid vector_content length; must be a multiple of 18.")
         clock = {}
         try:
             while vector_content:
                 node_uuid = uuid.UUID(bytes=vector_content[:16])
-                timestamp = int.from_bytes(
-                    vector_content[16:20], byteorder="big")
+                timestamp = np.frombuffer(vector_content[16:18], dtype=np.uint16)[0]
                 clock[node_uuid] = timestamp
-                vector_content = vector_content[20:]
+                vector_content = vector_content[18:]
         except Exception as e:
             print("[!] Error decoding vector clock from bytes:", e)
 
