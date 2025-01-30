@@ -192,7 +192,7 @@ class Node:
             with self.sending_mutex:
                 with open(file.file_path, "rb") as f:
                     f.seek(bytes_received)
-                    while True:
+                    while not self.stop:
                         # currently sending 2048 bytes, might not be the best value :)
                         data = f.read(CHUNK_SIZE)
                         f.peek()
@@ -240,9 +240,10 @@ class Node:
                 if not file_hash in self.file_parts:
                     with self.file_part_mutex:
                         self.file_parts[file_hash] = FilePart(
-                            self.files[file_hash].name, file_hash, self.files[file_hash].size, data)
+                            self.files[file_hash].name, file_hash, self.files[file_hash].size, data, msg.sender_uuid)
                 else:
                     self.file_parts[file_hash].append(data)
+                    self.file_parts[file_hash].sender = msg.sender_uuid
                 if not msg.control_byte == msg.bytecodes["dataend"]:
                     continue
                 if not hashlib.sha1(self.file_parts[file_hash].data).digest() == self.file_parts[file_hash].hash:
@@ -310,6 +311,9 @@ class Node:
                 Message(Message.bytecodes["leader"], self.uuid, 16, self.leader_uuid.bytes))
 
     def disconnect(self, connection: Connection):
+        # if disconnect has already been called for that peer, do nothing
+        if connection.stop:
+            return
         connection.close()
         print(f"[i] Disconnected peer {connection.uuid}")
         # remove all files of disconnected peer and adjust downloads
@@ -335,7 +339,15 @@ class Node:
                 for file_hash in file_hashes:
                     if not file_hash in self.file_parts:
                         continue
+                    if self.file_parts[file_hash].sender != connection.uuid:
+                        continue
                     print(f"[i] Getting new provider for {self.file_parts[file_hash].name}.")
+                    # if this is the leader, find new provider
+                    if self.uuid == self.leader_uuid:
+                        provider_uuid = self.select_provider(file.hash)
+                        self.peer_dict[provider_uuid].send_message(Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(0).tobytes() + file.hash))
+                        continue
+                    # request leader to find new provider
                     file_request = Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(len(self.file_parts[file_hash].data)).tobytes() + file.hash)
                     if connection.uuid != self.leader_uuid:
                         self.peer_dict[self.leader_uuid].send_message(file_request)
@@ -558,6 +570,7 @@ class Node:
                     for request in self.open_requests:
                         self.peer_dict[self.leader_uuid].send_message(request)
                         time.sleep(0.05)
+                    self.open_requests.clear()
                     print(
                         f"[i] New leader announced: <{msg.sender_uuid}:{msg.id}>{self.leader_uuid}")
                     continue

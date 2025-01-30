@@ -4,11 +4,12 @@ import numpy as np
 
 
 class FilePart:
-    def __init__(self, name: str, file_hash: bytes, size: np.uint64, data: bytes):
+    def __init__(self, name: str, file_hash: bytes, size: np.uint64, data: bytes, sender: uuid.UUID):
         self.name = name
         self.hash = file_hash
         self.size = size
         self.data = data
+        self.sender = sender
         self.progress = size/float(len(data))
 
     def append(self, data):
