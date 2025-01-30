@@ -20,6 +20,11 @@ class Message:
         "leader": 22,       # announce leader by uuid
     }
 
+    clock_sensitive = [
+        bytecodes["register"], 
+        bytecodes["deregister"]
+    ]
+
     # Maybe change sender to be a reference to the connection object and add an addr field for broadcasts.
     def __init__(self, control_byte: byte, sender_uuid: uuid.UUID, length: int = 0, content: bytes = b"", id: np.uint16 = np.uint16(0), vector: bytes = b"", connection=None):
         self.control_byte: byte = byte(control_byte)
