@@ -81,6 +81,8 @@ class Node:
         self.file_thread.start()
         self.file_request_thread = Thread(target=self.file_request_handler)
         self.file_request_thread.start()
+        self.file_integrity_thread = Thread(target=self.file_integrity_handler)
+        self.file_integrity_thread.start()
         self.heartbeat_checker_thread = Thread(target=self.check_heartbeat)
         self.heartbeat_checker_thread.start()
         self.heartbeat_thread = Thread(target=self.send_heartbeat)
@@ -132,6 +134,7 @@ class Node:
             if not file.hash in self.files:
                 print("[!] No file with specified hash was found!")
             self.files[file.hash].providers.remove(self.uuid)
+            self.files[file.hash].file_path = None
             if not self.files[file.hash].providers:
                 self.file_mutex.acquire()
                 del self.files[file.hash]
@@ -172,22 +175,25 @@ class Node:
             if self.uuid in file.providers:
                 print("[i] You already have this file.")
                 return
+            num_bytes = np.uint64(0)
+            if file.hash in self.file_parts:
+                num_bytes = np.uint64(len(self.file_parts[file.hash].data))
             # if this is the leader simply perform load balancing
             if self.uuid == self.leader_uuid:
                 provider_uuid = self.select_provider(file.hash)
-                msg = Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(0).tobytes() + file.hash)
+                msg = Message(Message.bytecodes["request"], self.uuid, 28, num_bytes.tobytes() + file.hash)
                 msg.set_vector(Message.vector_clock_to_bytes(self.vector_clock))
                 self.peer_dict[provider_uuid].send_message(msg)
                 return
             # send message to leader, to allow for load balancing
             for peer in self.peers:
                 if peer.uuid == self.leader_uuid:
-                    msg = Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(0).tobytes() + file.hash)
+                    msg = Message(Message.bytecodes["request"], self.uuid, 28, num_bytes.tobytes() + file.hash)
                     msg.set_vector(Message.vector_clock_to_bytes(self.vector_clock))
                     peer.send_message(msg)
                     return
             # if no leader was found append to open requests
-            msg = Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(0).tobytes() + file.hash)
+            msg = Message(Message.bytecodes["request"], self.uuid, 28, num_bytes.tobytes() + file.hash)
             msg.set_vector(Message.vector_clock_to_bytes(self.vector_clock))
             self.open_requests.append(msg)
             return
@@ -203,10 +209,13 @@ class Node:
                 with open(file.file_path, "rb") as f:
                     f.seek(bytes_received)
                     while not self.stop:
-                        # currently sending 2048 bytes, might not be the best value :)
+                        if not connection in self.peers:
+                            break
                         data = f.read(CHUNK_SIZE)
-                        f.peek()
                         if not data:
+                            break
+                        # verify file integrity before sending data
+                        if not file.file_path or file.check_integrity() != 0:
                             break
                         byte = Message.bytecodes["data"]
                         if f.tell() >= file.size:
@@ -215,8 +224,7 @@ class Node:
                             Message(byte, self.uuid, 20+len(data), file.hash + data))
                         # delay is needed to stay responsive
                         time.sleep(0.1)
-                print(
-                    f"[i] Finished sending file {file.name} to {connection.uuid}.")
+                print(f"[i] Finished sending file {file.name} to {connection.uuid}.")
         except Exception as e:
             print(f"[!] Error while sending file: {e}")
             traceback.print_exc()
@@ -231,15 +239,8 @@ class Node:
                 time.sleep(1)
                 pass
             except Exception as e:
-                print("[!] Something went wrong file request handling:")
+                print(f"[!] Something went wrong file request handling: {e}")
                 traceback.print_exc()
-
-    def list_file_parts(self):
-        print("*** Downloads **********")
-        with self.file_part_mutex:
-            for _, file in self.file_parts.items():
-                print(f"\t{file}")
-        print("************************")
 
     def file_handler(self):
         while not self.stop:
@@ -256,11 +257,13 @@ class Node:
                     self.file_parts[file_hash].sender = msg.sender_uuid
                 if not msg.control_byte == msg.bytecodes["dataend"]:
                     continue
-                if not hashlib.sha1(self.file_parts[file_hash].data).digest() == self.file_parts[file_hash].hash:
-                    print(
-                        f"[w] Received file {self.file_parts[file_hash].name} is not matching the hash!")
+                is_match = hashlib.sha1(self.file_parts[file_hash].data).digest() == file_hash
                 self.file_parts[file_hash].save()
-                self.register_file("./test/" + self.files[file_hash].name)
+                # dont register if hash does not match
+                if not is_match:
+                    print(f"[w] Received file {self.file_parts[file_hash].name} is not matching the hash!")
+                else:
+                    self.register_file("./test/" + self.files[file_hash].name)
                 with self.file_part_mutex:
                     del self.file_parts[file_hash]
             except queue.Empty:
@@ -268,8 +271,40 @@ class Node:
                 time.sleep(0.1)
                 pass
             except Exception as e:
-                print("[!] Something went wrong during message handling:")
+                print(f"[!] Something went wrong during message handling: {e}")
                 traceback.print_exc()
+
+    def file_integrity_handler(self):
+        while not self.stop:
+            deleted: list[File] = []
+            changed: list[File] = []
+            with self.file_mutex:
+                for _, file in self.files.items():
+                    if not file.file_path:
+                        continue
+                    integrity = file.check_integrity()
+                    if integrity == 0:
+                        continue
+                    if integrity == 1:
+                        deleted.append(file)
+                        continue
+                    if integrity == 2:
+                        changed.append(file)
+                        continue
+            for file in deleted:
+                self.deregister_file(file)
+            for file in changed:
+                path = file.file_path
+                self.deregister_file(file)
+                self.register_file(path)
+            time.sleep(0.5)
+    
+    def list_file_parts(self):
+        print("*** Downloads **********")
+        with self.file_part_mutex:
+            for _, file in self.file_parts.items():
+                print(f"\t{file}")
+        print("************************")
 
     def discovery(self):
         segments = self.sock.getsockname()[0].split(".")
@@ -312,8 +347,12 @@ class Node:
         self.file_mutex.acquire()
         for _, file in self.files.items():
             if self.uuid in file.providers:
-                peer.send_message(
-                    Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name)))
+                custom_clock = {self.uuid: self.vector_clock[self.uuid]}
+                for unique_id in self.peer_dict:
+                    custom_clock[unique_id] = np.uint16(0)
+                msg = Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name))
+                msg.set_vector(Message.vector_clock_to_bytes(custom_clock))
+                peer.send_message(msg)
         self.file_mutex.release()
         self.add_peer(peer)
         # send current leader uuid to newly connected peer if exists, if not exists and own uuid is lowest, trigger election
@@ -356,18 +395,7 @@ class Node:
                     if self.file_parts[file_hash].sender != connection.uuid:
                         continue
                     print(f"[i] Getting new provider for {self.file_parts[file_hash].name}.")
-                    # if this is the leader, find new provider
-                    if self.uuid == self.leader_uuid:
-                        provider_uuid = self.select_provider(file.hash)
-                        self.peer_dict[provider_uuid].send_message(Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(0).tobytes() + file.hash))
-                        continue
-                    # request leader to find new provider
-                    file_request = Message(Message.bytecodes["request"], self.uuid, 28, np.uint64(len(self.file_parts[file_hash].data)).tobytes() + file.hash)
-                    file_request.set_vector(file_request.vector_clock_to_bytes(self.vector_clock))
-                    if connection.uuid != self.leader_uuid:
-                        self.peer_dict[self.leader_uuid].send_message(file_request)
-                    else:
-                        self.open_requests.append(file_request)
+                    self.request_file(self.files[file_hash])
             if connection.uuid in self.vector_clock:
                 with self.clock_mutex:
                     del self.vector_clock[connection.uuid]
@@ -388,6 +416,7 @@ class Node:
         self.message_thread.join()
         self.file_thread.join()
         self.file_request_thread.join()
+        self.file_integrity_thread.join()
         self.connection_thread.join()
         self.heartbeat_checker_thread.join()
         self.heartbeat_thread.join()
@@ -430,12 +459,16 @@ class Node:
                 self.add_peer(peer)
                 print(f"[i] New connection by {addr}")
                 self.mutex.release()
-                # notify peer of provided files
+                # notify peer of provided files, and update its clock accordingly
                 with self.file_mutex:
                     for _, file in self.files.items():
                         if self.uuid in file.providers:
-                            peer.send_message(
-                                Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name)))
+                            custom_clock = {self.uuid: self.vector_clock[self.uuid]}
+                            for unique_id in self.peer_dict:
+                                custom_clock[unique_id] =  np.uint16(0)
+                            msg = Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name))
+                            msg.set_vector(Message.vector_clock_to_bytes(custom_clock))
+                            peer.send_message(msg)
             except:
                 continue
         print("[i] Stopped connection thread.")
@@ -448,7 +481,7 @@ class Node:
             removeable = []
             self.heartbeat_mutex.acquire()
             for peer in self.peers:
-                if peer.heartbeat + (8*HEARTBEAT_INTERVAL) < time.time():
+                if peer.heartbeat + (5*HEARTBEAT_INTERVAL) < time.time():
                     removeable.append(peer)
             self.heartbeat_mutex.release()
             for peer in removeable:
@@ -512,16 +545,17 @@ class Node:
                 if msg.sender_uuid == self.uuid:  # ignore own messages
                     continue
 
+                if msg.id != 0:  # check if message is a multicast
+                    # if the return value is False, we can ignore the message and continue as we already processed it
+                    if not self.forward_multicast(msg):
+                        continue
+
                 # Extract vector clock from the message content if message is clock_sensitive
                 if msg.vector_length > 0 and msg.control_byte in msg.clock_sensitive:
                     incoming_clock = Message.vector_clock_from_bytes(msg.vector)
                     self.merge_clock(incoming_clock)
                     print("[i] Updated vector clock.")
 
-                if msg.id != 0:  # check if message is a multicast
-                    # if the return value is False, we can ignore the message and continue as we already processed it
-                    if not self.forward_multicast(msg):
-                        continue
                 if msg.control_byte == msg.bytecodes["init"]:
                     if msg.length < 8:  # ignore if message is of insufficient length
                         continue
@@ -612,8 +646,17 @@ class Node:
                         self.files[file_hash].providers.remove(msg.sender_uuid)
                         if not self.files[file_hash].providers:
                             self.file_mutex.acquire()
-                            del self.file[file_hash]
+                            del self.files[file_hash]
                             self.file_mutex.release()
+                            if not file_hash in self.file_parts:
+                                continue
+                            print(f"[i] No more providers for {self.file_parts[file_hash].name}, aborting download.")
+                            with self.file_part_mutex:
+                                del self.file_parts[file_hash]
+                            continue
+                        # request leader to find new provider
+                        if file_hash in self.file_parts:
+                            self.request_file(self.files[file_hash])
                     continue
                 if msg.control_byte == msg.bytecodes["request"]:
                     if len(msg.content) < 20:
@@ -705,15 +748,18 @@ class Node:
             for node, timestamp in incoming_clock.items():
                 if node not in self.vector_clock:
                     self.vector_clock[node] = timestamp
-                else:
-                    self.vector_clock[node] = max(
-                        self.vector_clock[node], timestamp)
+                    continue
+                # take min value if overflow occured
+                if abs(int(timestamp) - int(self.vector_clock[node])) > np.iinfo(np.uint16).max/2:
+                    self.vector_clock[node] = min(self.vector_clock[node], timestamp)
+                    continue
+                self.vector_clock[node] = max(self.vector_clock[node], timestamp)
 
     # returns True if own clock is bigger than incoming clock
     def compare_clocks(self, clock: dict[uuid.UUID, np.uint16]) -> bool:
         with self.clock_mutex:
             for node, timestamp in clock.items():
-                if timestamp > self.vector_clock[node]:
+                if node in self.vector_clock and timestamp > self.vector_clock[node]:
                     return False
         return True
     
