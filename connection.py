@@ -77,8 +77,8 @@ class Connection():
             self.sock.sendall(msg.to_bytes())
             return True
         except socket.error as e:
-            print(f"[!] Error while sending message {msg.control_byte} to {self.uuid}: {e.strerror}")
-            traceback.print_exc()
+            # print(f"[!] Error while sending message {msg.control_byte} to {self.uuid}: {e.strerror}")
+            # traceback.print_exc()
             return False
 
     def close(self):

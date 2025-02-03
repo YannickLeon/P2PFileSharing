@@ -533,14 +533,14 @@ class Node:
         # accept and forward message if it is in the list of missed multicasts
         if msg.id in origin.missed_multicasts:
             origin.missed_multicasts.remove(msg.id)
-            Thread(target=self.message_peers, args=[msg, False, [msg.connection]]).start()
+            Thread(target=self.message_peers, args=[msg, False, [msg.connection, origin]]).start()
             return True
         # accept and forward message if it has a larger id
         if msg.id > origin.multicast_counter:
             origin.missed_multicasts.extend(
                 [np.uint16(i) for i in range(int(origin.multicast_counter+1), int(msg.id))])
             origin.multicast_counter = msg.id
-            Thread(target=self.message_peers, args=[msg, False, [msg.connection]]).start()
+            Thread(target=self.message_peers, args=[msg, False, [msg.connection, origin]]).start()
             return True
         # if msg id is much smaller than the counter for that peer, we assume an overflow has happened and act as if it was larger
         if origin.multicast_counter - msg.id > (np.iinfo(np.uint16).max/2): 
@@ -549,7 +549,7 @@ class Node:
             origin.missed_multicasts.extend(
                 [np.uint16(i) for i in range(1, int(msg.id))])
             origin.multicast_counter = msg.id
-            Thread(target=self.message_peers, args=[msg, False, [msg.connection]]).start()
+            Thread(target=self.message_peers, args=[msg, False, [msg.connection, origin]]).start()
             return True
         return False
 
