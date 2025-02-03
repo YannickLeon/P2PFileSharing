@@ -27,8 +27,6 @@ class Connection():
         sock.setblocking(False)
 
         self.listener_thread = Thread(target=self.listen)
-        # self.listener_thread = mp.Process(
-        #     target=self.listen)
         self.listener_thread.start()
 
     # Listen to messages
@@ -73,11 +71,13 @@ class Connection():
                 break
         # print(f"[i] listener stopped for {self.uuid if self.uuid else self.addr}.")
 
-    def send_message(self, msg: Message):
+    def send_message(self, msg: Message) -> bool:
         try:
             self.sock.sendall(msg.to_bytes())
+            return True
         except socket.error as e:
-            print(f"[!] Error while sending message: {e.strerror}")
+            # print(f"[!] Error while sending message: {e.strerror}")
+            return False
 
     def close(self):
         self.stop = True

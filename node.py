@@ -183,14 +183,14 @@ class Node:
                 provider_uuid = self.select_provider(file.hash)
                 msg = Message(Message.bytecodes["request"], self.uuid, 28, num_bytes.tobytes() + file.hash)
                 msg.set_vector(Message.vector_clock_to_bytes(self.vector_clock))
-                self.peer_dict[provider_uuid].send_message(msg)
+                self.send_message(self.peer_dict[provider_uuid], msg)
                 return
             # send message to leader, to allow for load balancing
             for peer in self.peers:
                 if peer.uuid == self.leader_uuid:
                     msg = Message(Message.bytecodes["request"], self.uuid, 28, num_bytes.tobytes() + file.hash)
                     msg.set_vector(Message.vector_clock_to_bytes(self.vector_clock))
-                    peer.send_message(msg)
+                    self.send_message(peer, msg)
                     return
             # if no leader was found append to open requests
             msg = Message(Message.bytecodes["request"], self.uuid, 28, num_bytes.tobytes() + file.hash)
@@ -220,8 +220,7 @@ class Node:
                         byte = Message.bytecodes["data"]
                         if f.tell() >= file.size:
                             byte = Message.bytecodes["dataend"]
-                        connection.send_message(
-                            Message(byte, self.uuid, 20+len(data), file.hash + data))
+                        self.send_message(connection, Message(byte, self.uuid, 20+len(data), file.hash + data))
                         # delay is needed to stay responsive
                         time.sleep(0.1)
                 print(f"[i] Finished sending file {file.name} to {connection.uuid}.")
@@ -322,6 +321,14 @@ class Node:
                 Message(Message.bytecodes["init"], self.uuid, 8, content))
             time.sleep(5)
 
+    def send_message(self, peer: Connection, msg: Message):
+        if not peer.send_message(msg):
+            print(f"[i] Error while sending message to {peer.uuid}, disconnecting...")
+            msg = Message(Message.bytecodes["disconnect"], self.uuid, 16, peer.uuid.bytes)
+            Thread(target=self.message_peers, args=[msg, True]).start()
+            self.disconnect(peer)
+
+
     def add_peer(self, peer: Connection):
         self.heartbeat_mutex.acquire()
         self.peers.append(peer)
@@ -339,7 +346,7 @@ class Node:
                           self.file_q, msg.sender_uuid)
         self.peer_dict[msg.sender_uuid] = peer
         self.vector_clock[msg.sender_uuid] = np.uint16(0)
-        peer.send_message(Message(Message.bytecodes["identify"], self.uuid))
+        self.send_message(peer, Message(Message.bytecodes["identify"], self.uuid))
         print(f"[i] New connection with {addr}")
         # simply send message to all peers without forwarding to maintain consistent state (message is "self forwarding")
         Thread(target=self.message_peers, args=[msg, False]).start()
@@ -352,7 +359,7 @@ class Node:
                     custom_clock[unique_id] = np.uint16(0)
                 msg = Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name))
                 msg.set_vector(Message.vector_clock_to_bytes(custom_clock))
-                peer.send_message(msg)
+                self.send_message(peer, msg)
         self.file_mutex.release()
         self.add_peer(peer)
         # send current leader uuid to newly connected peer if exists, if not exists and own uuid is lowest, trigger election
@@ -360,8 +367,7 @@ class Node:
             # if all(self.uuid < peer.uuid for peer in self.peers):
             self.start_election()
         else:
-            peer.send_message(
-                Message(Message.bytecodes["leader"], self.uuid, 16, self.leader_uuid.bytes))
+            self.send_message(peer, Message(Message.bytecodes["leader"], self.uuid, 16, self.leader_uuid.bytes))
 
     def disconnect(self, connection: Connection):
         # if disconnect has already been called for that peer, do nothing
@@ -440,7 +446,7 @@ class Node:
             else:
                 self.multicast_counter = np.uint16(1)
         for peer in self.peers:
-            peer.send_message(msg)
+            self.send_message(peer, msg)
 
     # Accept new connections from peers if no outgoing or incoming connectiosn exist
     #   outgoing: connections which are initiated by this peer
@@ -468,7 +474,7 @@ class Node:
                                 custom_clock[unique_id] =  np.uint16(0)
                             msg = Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name))
                             msg.set_vector(Message.vector_clock_to_bytes(custom_clock))
-                            peer.send_message(msg)
+                            self.send_message(peer, msg)
             except:
                 continue
         print("[i] Stopped connection thread.")
@@ -488,10 +494,8 @@ class Node:
                 if peer in self.peers:
                     print(f"[i] No heartbeat from {peer.uuid}")
                     # suspect failure and send notification to all peers to maintain consistent state
-                    msg = Message(
-                        Message.bytecodes["disconnect"], self.uuid, 16, peer.uuid.bytes)
-                    Thread(target=self.message_peers,
-                           args=[msg, True]).start()
+                    msg = Message(Message.bytecodes["disconnect"], self.uuid, 16, peer.uuid.bytes)
+                    Thread(target=self.message_peers, args=[msg, True]).start()
                     self.disconnect(peer)
             interval = HEARTBEAT_INTERVAL - (time.time() - t)
             if interval > 0:
@@ -554,7 +558,7 @@ class Node:
                 if msg.vector_length > 0 and msg.control_byte in msg.clock_sensitive:
                     incoming_clock = Message.vector_clock_from_bytes(msg.vector)
                     self.merge_clock(incoming_clock)
-                    print("[i] Updated vector clock.")
+                    # print("[i] Updated vector clock.")
 
                 if msg.control_byte == msg.bytecodes["init"]:
                     if msg.length < 8:  # ignore if message is of insufficient length
@@ -584,8 +588,7 @@ class Node:
                     # Solution: peer with lower uuid aborts the incoming connection
                     if peer != None and peer.uuid < self.uuid:
                         # close connection and notify
-                        peer.send_message(
-                            Message(msg.bytecodes["abort"], self.uuid))
+                        self.send_message(peer, Message(msg.bytecodes["abort"], self.uuid))
                         self.disconnect(msg.connection)
                     # print(f"[i] Received identification from {msg.connection.addr}")
                     msg.connection.uuid = msg.sender_uuid
@@ -613,7 +616,7 @@ class Node:
                     self.leader_uuid = uuid.UUID(bytes=msg.content)
                     # send open requests waiting for leader, no extra thread should be required as leader election happens almost immediately after dc
                     for request in self.open_requests:
-                        self.peer_dict[self.leader_uuid].send_message(request)
+                        self.send_message(self.peer_dict[self.leader_uuid], request)
                         time.sleep(0.05)
                     self.open_requests.clear()
                     # print(f"[i] New leader announced: <{msg.sender_uuid}:{msg.id}>{self.leader_uuid}")
@@ -675,7 +678,7 @@ class Node:
                         provider_uuid = self.select_provider(file_hash)
                         if provider_uuid != self.uuid:
                             print("[i] Forwarded a file request to provider")
-                            self.peer_dict[provider_uuid].send_message(msg)
+                            self.send_message(self.peer_dict[provider_uuid], msg)
                             continue
                     # create a thread sending file to peer
                     self.file_request_q.put(Thread(target=self.send_file, args=[
@@ -726,8 +729,7 @@ class Node:
             self.announce_leader(self.uuid)
         else:
             for node in higher_nodes:
-                node.send_message(
-                    Message(Message.bytecodes["election"], self.uuid))
+                self.send_message(node, Message(Message.bytecodes["election"], self.uuid))
 
     def announce_leader(self, leader_uuid):
         # announce this node as the leader
@@ -759,6 +761,7 @@ class Node:
     def compare_clocks(self, clock: dict[uuid.UUID, np.uint16]) -> bool:
         with self.clock_mutex:
             for node, timestamp in clock.items():
+                # sometimes vectors contain peers that recently disconnected, ignore them
                 if node in self.vector_clock and timestamp > self.vector_clock[node]:
                     return False
         return True
