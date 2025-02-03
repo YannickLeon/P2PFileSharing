@@ -628,7 +628,7 @@ class Node:
                     self.leader_uuid = uuid.UUID(bytes=msg.content)
                     # send open requests waiting for leader, no extra thread should be required as leader election happens almost immediately after dc
                     for request in self.open_requests:
-                        if self.leader.uuid == self.uuid:
+                        if self.leader_uuid == self.uuid:
                             self.q.put(request)
                         else: 
                             self.send_message(self.peer_dict[self.leader_uuid], request)
