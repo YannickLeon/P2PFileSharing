@@ -5,6 +5,7 @@ from queue import Queue
 import select
 import uuid
 import time
+import traceback
 
 from message import Message
 
@@ -76,7 +77,8 @@ class Connection():
             self.sock.sendall(msg.to_bytes())
             return True
         except socket.error as e:
-            # print(f"[!] Error while sending message: {e.strerror}")
+            print(f"[!] Error while sending message: {e.strerror}")
+            traceback.print_exc()
             return False
 
     def close(self):
