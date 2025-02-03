@@ -120,9 +120,8 @@ class Node:
             file_name = file_path.split("/")[-1]
             file = File(file_hash, file_name, np.uint64(os.path.getsize(
                 file_path)), [self.uuid, ], file_path)
-            self.file_mutex.acquire()
-            self.files[file.hash] = file
-            self.file_mutex.release()
+            with self.file_mutex:
+                self.files[file.hash] = file
             # notify peers
             msg = Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), 
                           file.hash + file.size.tobytes() + str.encode(file.name))
@@ -142,9 +141,8 @@ class Node:
             self.files[file.hash].file_path = None
             # if no providers are left, delete entry
             if not self.files[file.hash].providers:
-                self.file_mutex.acquire()
-                del self.files[file.hash]
-                self.file_mutex.release()
+                with self.file_mutex:
+                    del self.files[file.hash]
             # notify peers
             msg = Message(Message.bytecodes["deregister"], self.uuid, 20, file.hash)
             self.increment_clock()
@@ -159,18 +157,17 @@ class Node:
         files = []
         c = 0
         print("*** Files **************")
-        self.file_mutex.acquire()
-        for _, file in self.files.items():
-            if self.uuid in file.providers:
-                files.append(file)
-                print(f"[{c}]{file}")
-                c += 1
-                continue
-            if not provided_only:
-                files.append(file)
-                print(f"[{c}]{file}")
-                c += 1
-        self.file_mutex.release()
+        with self.file_mutex:
+            for _, file in self.files.items():
+                if self.uuid in file.providers:
+                    files.append(file)
+                    print(f"[{c}]{file}")
+                    c += 1
+                    continue
+                if not provided_only:
+                    files.append(file)
+                    print(f"[{c}]{file}")
+                    c += 1
         print("************************")
         return files
 
@@ -343,9 +340,8 @@ class Node:
 
 
     def add_peer(self, peer: Connection):
-        self.heartbeat_mutex.acquire()
-        self.peers.append(peer)
-        self.heartbeat_mutex.release()
+        with self.heartbeat_mutex:
+            self.peers.append(peer)
 
     # establish outgoing connection to peer
     def connect(self, addr, msg: Message):
@@ -366,16 +362,15 @@ class Node:
         # simply send message to all peers without forwarding to maintain consistent state (message is "self forwarding")
         Thread(target=self.message_peers, args=[msg, False]).start()
         # notify peer of provided files
-        self.file_mutex.acquire()
-        for _, file in self.files.items():
-            if self.uuid in file.providers:
-                custom_clock = {self.uuid: self.vector_clock[self.uuid]}
-                for unique_id in self.peer_dict:
-                    custom_clock[unique_id] = np.uint16(0)
-                msg = Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name))
-                msg.set_vector(Message.vector_clock_to_bytes(custom_clock))
-                self.send_message(peer, msg)
-        self.file_mutex.release()
+        with self.file_mutex:
+            for _, file in self.files.items():
+                if self.uuid in file.providers:
+                    custom_clock = {self.uuid: self.vector_clock[self.uuid]}
+                    for unique_id in self.peer_dict:
+                        custom_clock[unique_id] = np.uint16(0)
+                    msg = Message(Message.bytecodes["register"], self.uuid, 28+len(file.name), file.hash + file.size.tobytes() + str.encode(file.name))
+                    msg.set_vector(Message.vector_clock_to_bytes(custom_clock))
+                    self.send_message(peer, msg)
         self.add_peer(peer)
         # send current leader uuid to newly connected peer if exists, if not exists and own uuid is lowest, trigger election
         if not self.leader_uuid:
@@ -594,24 +589,23 @@ class Node:
                     continue
                 if msg.control_byte == msg.bytecodes["identify"]:
                     # mutex to avoid identifying peers before adding them to the peer list
-                    self.mutex.acquire(blocking=True)
-                    # check if duplicate exists
-                    peer = None
-                    for p in self.peers:
-                        if p.uuid == msg.sender_uuid:
-                            peer = p
-                            break
-                    # duplicates are possible if two peers try to both open a connection, this happens if a broadcast arrives simultaneously
-                    # Solution: peer with lower uuid aborts the incoming connection
-                    if peer != None and peer.uuid < self.uuid:
-                        # close connection and notify
-                        self.send_message(peer, Message(msg.bytecodes["abort"], self.uuid))
-                        self.disconnect(msg.connection)
-                    # otherwise set UUID and create entries in data structures
-                    msg.connection.uuid = msg.sender_uuid
-                    self.peer_dict[msg.sender_uuid] = msg.connection
-                    self.vector_clock[msg.sender_uuid] = np.uint16(0)
-                    self.mutex.release()
+                    with self.mutex:
+                        # check if duplicate exists
+                        peer = None
+                        for p in self.peers:
+                            if p.uuid == msg.sender_uuid:
+                                peer = p
+                                break
+                        # duplicates are possible if two peers try to both open a connection, this happens if a broadcast arrives simultaneously
+                        # Solution: peer with lower uuid aborts the incoming connection
+                        if peer != None and peer.uuid < self.uuid:
+                            # close connection and notify
+                            self.send_message(peer, Message(msg.bytecodes["abort"], self.uuid))
+                            self.disconnect(msg.connection)
+                        # otherwise set UUID and create entries in data structures
+                        msg.connection.uuid = msg.sender_uuid
+                        self.peer_dict[msg.sender_uuid] = msg.connection
+                        self.vector_clock[msg.sender_uuid] = np.uint16(0)
                     continue
                 if msg.control_byte == msg.bytecodes["abort"]:
                     self.disconnect(msg.connection)
@@ -651,9 +645,8 @@ class Node:
                         self.files[file_hash].providers.append(msg.sender_uuid)
                         continue
                     # otherwise create file object
-                    self.file_mutex.acquire()
-                    self.files[file_hash] = File(file_hash, file_name, np.uint64(file_size), [msg.sender_uuid, ])
-                    self.file_mutex.release()
+                    with self.file_mutex:
+                        self.files[file_hash] = File(file_hash, file_name, np.uint64(file_size), [msg.sender_uuid, ])
                     continue
                 if msg.control_byte == msg.bytecodes["deregister"]:
                     if len(msg.content) < 20:
@@ -665,9 +658,8 @@ class Node:
                         self.files[file_hash].providers.remove(msg.sender_uuid)
                         # if no providers are left delete all related File and FilePart entries
                         if not self.files[file_hash].providers:
-                            self.file_mutex.acquire()
-                            del self.files[file_hash]
-                            self.file_mutex.release()
+                            with self.file_mutex:
+                                del self.files[file_hash]
                             if not file_hash in self.file_parts:
                                 continue
                             print(f"[i] No more providers for {self.file_parts[file_hash].name}, aborting download.")
