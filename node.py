@@ -324,8 +324,10 @@ class Node:
     def send_message(self, peer: Connection, msg: Message):
         if not peer.send_message(msg):
             print(f"[i] Error while sending message to {peer.uuid}, disconnecting...")
-            msg = Message(Message.bytecodes["disconnect"], self.uuid, 16, peer.uuid.bytes)
-            Thread(target=self.message_peers, args=[msg, True]).start()
+            if peer.uuid == self.leader_uuid:
+                self.open_requests.append(msg)
+            dc_msg = Message(Message.bytecodes["disconnect"], self.uuid, 16, peer.uuid.bytes)
+            Thread(target=self.message_peers, args=[dc_msg, True]).start()
             self.disconnect(peer)
 
 
