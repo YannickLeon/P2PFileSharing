@@ -49,8 +49,6 @@ class Node:
         self.peer_mutex = Lock()
         # mutex to deal with threading issues when accepting and identifying new peers
         self.mutex = Lock()
-        # mutex to avoid performing an election while a peer is being disconnected (inconsistent data structures)
-        self.disconnect_mutex = Lock()
 
         # Initialize vector clocks for this node
         self.vector_clock: dict[uuid.UUID, np.uint16] = {self.uuid: np.uint16(0)}
@@ -387,44 +385,43 @@ class Node:
             return
         connection.close()
         print(f"[i] Disconnected peer {connection.uuid}")
-        with self.disconnect_mutex:
-            if connection.uuid != None:
-                # remove all files of disconnected peer and adjust downloads
-                with self.file_mutex:
-                    file_hashes = []
-                    removeables = []
-                    for _, file in self.files.items():
-                        if connection.uuid in file.providers:
-                            file.providers.remove(connection.uuid)
-                            if not file.providers:
-                                removeables.append(file.hash)
-                                continue
-                            # remember hash if there are other providers
-                            file_hashes.append(file.hash)
-                    for removeable in removeables:
-                        del self.files[removeable]
-                        # cancel file downloads for files without providers
-                        if removeable in self.file_parts:
-                            print(f"[i] No more providers for {self.file_parts[removeable].name}, aborting download.")
-                            with self.file_part_mutex:
-                                del self.file_parts[removeable]
-                    # look for a new provider, where possible
-                    for file_hash in file_hashes:
-                        if not file_hash in self.file_parts:
+        if connection.uuid != None:
+            # remove all files of disconnected peer and adjust downloads
+            with self.file_mutex:
+                file_hashes = []
+                removeables = []
+                for _, file in self.files.items():
+                    if connection.uuid in file.providers:
+                        file.providers.remove(connection.uuid)
+                        if not file.providers:
+                            removeables.append(file.hash)
                             continue
-                        if self.file_parts[file_hash].sender != connection.uuid:
-                            continue
-                        print(f"[i] Getting new provider for {self.file_parts[file_hash].name}.")
-                        self.request_file(self.files[file_hash])
-                # adjust remaining data structures
-                if connection.uuid in self.vector_clock:
-                    with self.clock_mutex:
-                        del self.vector_clock[connection.uuid]
-                if connection.uuid in self.peer_dict:
-                    del self.peer_dict[connection.uuid]
-            if connection in self.peers:
-                with self.heartbeat_mutex:
-                    self.peers.remove(connection)
+                        # remember hash if there are other providers
+                        file_hashes.append(file.hash)
+                for removeable in removeables:
+                    del self.files[removeable]
+                    # cancel file downloads for files without providers
+                    if removeable in self.file_parts:
+                        print(f"[i] No more providers for {self.file_parts[removeable].name}, aborting download.")
+                        with self.file_part_mutex:
+                            del self.file_parts[removeable]
+                # look for a new provider, where possible
+                for file_hash in file_hashes:
+                    if not file_hash in self.file_parts:
+                        continue
+                    if self.file_parts[file_hash].sender != connection.uuid:
+                        continue
+                    print(f"[i] Getting new provider for {self.file_parts[file_hash].name}.")
+                    self.request_file(self.files[file_hash])
+            # adjust remaining data structures
+            if connection.uuid in self.vector_clock:
+                with self.clock_mutex:
+                    del self.vector_clock[connection.uuid]
+            if connection.uuid in self.peer_dict:
+                del self.peer_dict[connection.uuid]
+        if connection in self.peers:
+            with self.heartbeat_mutex:
+                self.peers.remove(connection)
         # start election if disconnected peer was the leader
         if connection.uuid == self.leader_uuid:
             self.start_election()
@@ -451,7 +448,7 @@ class Node:
         self.bc_sock.sendto(msg.to_bytes(), ('<broadcast>', 9000))
 
     # send message to all peers
-    def message_peers(self, msg: Message, set_multicast_counter=True):
+    def message_peers(self, msg: Message, set_multicast_counter=True, exclude: list[Connection] = []):
         # overflow is planned, when max_int is reached we continue at 1
         if set_multicast_counter:
             msg.id = np.uint16(self.multicast_counter)
@@ -460,6 +457,8 @@ class Node:
             else:
                 self.multicast_counter = np.uint16(1)
         for peer in self.peers:
+            if peer in exclude:
+                continue
             self.send_message(peer, msg)
 
     # Accept new connections from peers if no outgoing or incoming connectiosn exist
@@ -534,14 +533,14 @@ class Node:
         # accept and forward message if it is in the list of missed multicasts
         if msg.id in origin.missed_multicasts:
             origin.missed_multicasts.remove(msg.id)
-            Thread(target=self.message_peers, args=[msg, False]).start()
+            Thread(target=self.message_peers, args=[msg, False, [msg.connection]]).start()
             return True
         # accept and forward message if it has a larger id
         if msg.id > origin.multicast_counter:
             origin.missed_multicasts.extend(
                 [np.uint16(i) for i in range(int(origin.multicast_counter+1), int(msg.id))])
             origin.multicast_counter = msg.id
-            Thread(target=self.message_peers, args=[msg, False]).start()
+            Thread(target=self.message_peers, args=[msg, False, [msg.connection]]).start()
             return True
         # if msg id is much smaller than the counter for that peer, we assume an overflow has happened and act as if it was larger
         if origin.multicast_counter - msg.id > (np.iinfo(np.uint16).max/2): 
@@ -550,7 +549,7 @@ class Node:
             origin.missed_multicasts.extend(
                 [np.uint16(i) for i in range(1, int(msg.id))])
             origin.multicast_counter = msg.id
-            Thread(target=self.message_peers, args=[msg, False]).start()
+            Thread(target=self.message_peers, args=[msg, False, [msg.connection]]).start()
             return True
         return False
 
@@ -737,17 +736,16 @@ class Node:
         print("************************")
 
     def start_election(self):
-        with self.disconnect_mutex:
-            print("Starting election...")
-            higher_nodes = [peer for peer in self.peers if peer.uuid !=
-                            None and peer.uuid > self.uuid]
+        print("Starting election...")
+        higher_nodes = [peer for peer in self.peers if peer.uuid !=
+                        None and peer.uuid > self.uuid]
 
-            if not higher_nodes:
-                # No higher node exists, this node becomes the leader
-                self.announce_leader(self.uuid)
-            else:
-                for node in higher_nodes:
-                    self.send_message(node, Message(Message.bytecodes["election"], self.uuid))
+        if not higher_nodes:
+            # No higher node exists, this node becomes the leader
+            self.announce_leader(self.uuid)
+        else:
+            for node in higher_nodes:
+                self.send_message(node, Message(Message.bytecodes["election"], self.uuid))
 
     def announce_leader(self, leader_uuid):
         # announce this node as the leader
