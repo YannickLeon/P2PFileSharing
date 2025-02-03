@@ -224,7 +224,8 @@ class Node:
                         byte = Message.bytecodes["data"]
                         if f.tell() >= file.size:
                             byte = Message.bytecodes["dataend"]
-                        self.send_message(connection, Message(byte, self.uuid, 20+len(data), file.hash + data))
+                        connection.send_message(Message(byte, self.uuid, 20+len(data), file.hash + data))
+                        # self.send_message(connection, Message(byte, self.uuid, 20+len(data), file.hash + data))
                         # delay is needed to stay responsive
                         time.sleep(0.05)
                 print(f"[i] Finished sending file {file.name} to {connection.uuid}.")
@@ -627,7 +628,10 @@ class Node:
                     self.leader_uuid = uuid.UUID(bytes=msg.content)
                     # send open requests waiting for leader, no extra thread should be required as leader election happens almost immediately after dc
                     for request in self.open_requests:
-                        self.send_message(self.peer_dict[self.leader_uuid], request)
+                        if self.leader.uuid == self.uuid:
+                            self.q.put(request)
+                        else: 
+                            self.send_message(self.peer_dict[self.leader_uuid], request)
                         time.sleep(0.05)
                     self.open_requests.clear()
                     continue
@@ -745,8 +749,7 @@ class Node:
         # announce this node as the leader
         self.leader_uuid = leader_uuid
         print(f"[i] Announcing leader: {leader_uuid}")
-        leader_msg = Message(
-            Message.bytecodes["leader"], self.uuid, 16, leader_uuid.bytes)
+        leader_msg = Message(Message.bytecodes["leader"], self.uuid, 16, leader_uuid.bytes)
         self.message_peers(leader_msg)
 
     def increment_clock(self):
